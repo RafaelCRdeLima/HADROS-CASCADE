@@ -71,6 +71,53 @@ def effective_camera_naming_mode(config: dict[str, Any]) -> str:
     return raw
 
 
+def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
+    nested = config.get("photon_escape_classifier", {})
+    if not isinstance(nested, dict):
+        nested = {}
+    required_keys = [
+        "enable_photon_observer_camera",
+        "photon_observer_mode",
+        "photon_observer_frame",
+        "photon_null_norm_tolerance",
+        "photon_invariant_tolerance",
+        "photon_horizon_crossing_tolerance_rg",
+        "photon_fail_on_invariant_violation",
+        "photon_max_geodesic_steps",
+        "photon_geodesic_step_rg",
+        "photon_min_energy_gev",
+        "photon_camera_output_mode",
+        "photon_redshift_mode",
+    ]
+    values = {}
+    for key in required_keys:
+        if key in nested:
+            values[key] = nested[key]
+        elif key in config:
+            values[key] = config[key]
+        else:
+            raise ValueError(f"Missing required photon_escape_classifier parameter: {key}")
+    if str(values["photon_observer_mode"]) != "escape_classifier":
+        raise ValueError("Only photon_observer_mode='escape_classifier' is implemented in Phase 1")
+    if str(values["photon_observer_frame"]) != "ZAMO":
+        raise ValueError("Only photon_observer_frame='ZAMO' is implemented in Phase 1")
+    if str(values["photon_redshift_mode"]) != "disabled_until_validated":
+        raise ValueError("Photon redshift is not implemented in Phase 1")
+    if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
+        raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
+    if float(values["photon_null_norm_tolerance"]) <= 0.0:
+        raise ValueError("photon_null_norm_tolerance must be > 0")
+    if float(values["photon_invariant_tolerance"]) <= 0.0:
+        raise ValueError("photon_invariant_tolerance must be > 0")
+    if float(values["photon_horizon_crossing_tolerance_rg"]) < 0.0:
+        raise ValueError("photon_horizon_crossing_tolerance_rg must be >= 0")
+    if float(values["photon_geodesic_step_rg"]) <= 0.0:
+        raise ValueError("photon_geodesic_step_rg must be > 0")
+    if int(values["photon_max_geodesic_steps"]) <= 0:
+        raise ValueError("photon_max_geodesic_steps must be > 0")
+    return values
+
+
 def load_config(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data.get("run"), dict):
@@ -95,6 +142,10 @@ def load_config(path: Path) -> dict[str, Any]:
         data.setdefault("spatial_tolerance_rg", assoc.get("spatial_tolerance_rg", 1.0))
         data.setdefault("angular_tolerance_deg", assoc.get("angular_tolerance_deg", 1.0))
         data.setdefault("camera_naming_mode", assoc.get("camera_naming_mode", "both"))
+    if isinstance(data.get("photon_escape_classifier"), dict):
+        photon = data["photon_escape_classifier"]
+        for key, value in photon.items():
+            data.setdefault(key, value)
     if isinstance(data.get("uhe_dis"), dict):
         uhe = data["uhe_dis"]
         data.setdefault("source_model", uhe.get("source_model", "funnel_wall"))
@@ -118,6 +169,7 @@ def load_config(path: Path) -> dict[str, Any]:
     data["physics_mode_effective"] = mode
     data["association_mode_effective"] = effective_association_mode(data)
     data["camera_naming_mode_effective"] = effective_camera_naming_mode(data)
+    data["photon_escape_classifier_effective"] = photon_escape_config(data)
     data["produce_uhe_collision_particles"] = mode in {"uhe_cascade", "uhe_particles_camera"}
     data["run_mev_torus_neutrinos"] = mode == "mev_torus"
     data.setdefault("generate_standard_scientific_plots", True)
@@ -185,6 +237,25 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "camera_limitation": "secondary particles are associated with Kerr rays by spatial/angular criteria; they are not propagated to the distant observer",
         "full_transport_available": False,
     }
+    photon = photon_escape_config(config)
+    provenance.update({
+        "photon_escape_classifier_enabled_effective": as_bool(photon["enable_photon_observer_camera"]),
+        "photon_observer_mode": photon["photon_observer_mode"],
+        "photon_observer_frame": photon["photon_observer_frame"],
+        "photon_null_norm_tolerance": float(photon["photon_null_norm_tolerance"]),
+        "photon_invariant_tolerance": float(photon["photon_invariant_tolerance"]),
+        "photon_horizon_crossing_tolerance_rg": float(photon["photon_horizon_crossing_tolerance_rg"]),
+        "photon_fail_on_invariant_violation": as_bool(photon["photon_fail_on_invariant_violation"]),
+        "photon_max_geodesic_steps": int(photon["photon_max_geodesic_steps"]),
+        "photon_geodesic_step_rg": float(photon["photon_geodesic_step_rg"]),
+        "photon_min_energy_gev": float(photon["photon_min_energy_gev"]),
+        "photon_camera_output_mode": photon["photon_camera_output_mode"],
+        "photon_redshift_mode": photon["photon_redshift_mode"],
+        "photon_camera_physical_interpretation": "photon_escape_classifier",
+        "photon_camera_is_full_observational_transport": False,
+        "photon_projected_to_pixels": False,
+        "photon_observer_sphere_crossing_is_detection": False,
+    })
     path = output_dir / "final_pipeline_science_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"config_web_values": values, "provenance": provenance, **config}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -413,6 +484,57 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
             continue_on_geant4_partial=True,
         ),
     ])
+    photon = photon_escape_config(config)
+    if as_bool(photon["enable_photon_observer_camera"]):
+        fail_on_invariant = "true" if as_bool(photon["photon_fail_on_invariant_violation"]) else "false"
+        steps.append(
+            FinalStep(
+                "photon_escape_classifier",
+                [
+                    sys.executable,
+                    "scripts/science/run_kerr_photon_escape_classifier.py",
+                    "--input",
+                    str(cascade / "geant4_ready_particles.jsonl"),
+                    "--output-jsonl",
+                    str(cascade / "photon_escape_classifier.jsonl"),
+                    "--summary-csv",
+                    str(cascade / "photon_escape_summary.csv"),
+                    "--summary-md",
+                    str(cascade / "photon_escape_summary.md"),
+                    "--provenance",
+                    str(cascade / "photon_escape_provenance.json"),
+                    "--backend",
+                    "build/compute_kerr_photon_escape_classifier",
+                    "--spin",
+                    str(config.get("spin", 0.8)),
+                    "--observer-radius-rg",
+                    str(config.get("camera_r_obs_rg", 80.0)),
+                    "--max-radius-rg",
+                    str(config.get("camera_r_max_rg", 120.0)),
+                    "--photon-geodesic-step-rg",
+                    str(photon["photon_geodesic_step_rg"]),
+                    "--photon-max-geodesic-steps",
+                    str(int(photon["photon_max_geodesic_steps"])),
+                    "--photon-null-norm-tolerance",
+                    str(photon["photon_null_norm_tolerance"]),
+                    "--photon-invariant-tolerance",
+                    str(photon["photon_invariant_tolerance"]),
+                    "--photon-horizon-crossing-tolerance-rg",
+                    str(photon["photon_horizon_crossing_tolerance_rg"]),
+                    "--photon-fail-on-invariant-violation",
+                    fail_on_invariant,
+                    "--photon-min-energy-gev",
+                    str(photon["photon_min_energy_gev"]),
+                    "--photon-observer-frame",
+                    str(photon["photon_observer_frame"]),
+                ],
+                [
+                    cascade / "photon_escape_classifier.jsonl",
+                    cascade / "photon_escape_summary.csv",
+                    cascade / "photon_escape_provenance.json",
+                ],
+            )
+        )
     if mode == "uhe_cascade":
         return steps
     if association_mode == "full_transport":

@@ -132,6 +132,7 @@ COMMON_OBJS := \
 .PHONY: all help build dirs clean clean-build clean-output \
 	kerr-geodesics kerr-rays compute_kerr_geodesics dump_kerr_camera_rays \
 	compute_kerr_particle_camera \
+	compute_kerr_photon_escape_classifier \
 	compute_backward_camera_particle_channels \
 	cascade_geant4_local_box geant4_smoke_test \
 	compute_deposition_proxy_camera \
@@ -283,6 +284,20 @@ compute_kerr_particle_camera: \
 
 
 # =========================================================
+# Photon escape classifier (Phase 1 only; no pixels/images/redshift)
+# =========================================================
+
+compute_kerr_photon_escape_classifier: dirs
+	$(CXX) $(CXXFLAGS) \
+	  $(APP_DIR)/compute_kerr_photon_escape_classifier.cpp \
+	  $(SRC_DIR)/photon_escape_classifier.cpp \
+	  $(SRC_DIR)/cascade/kerr_local_tetrad.cpp \
+	  $(SRC_DIR)/kerr_metric.cpp \
+	  $(SRC_DIR)/kerr_geodesic.cpp \
+	  -o $(BUILD_DIR)/compute_kerr_photon_escape_classifier
+
+
+# =========================================================
 # Backward camera particle channels
 # =========================================================
 
@@ -356,7 +371,8 @@ compute_deposition_proxy_camera: dirs
 # =========================================================
 
 build: dirs compute_kerr_geodesics dump_kerr_camera_rays \
-	compute_kerr_particle_camera compute_backward_camera_particle_channels
+	compute_kerr_particle_camera compute_kerr_photon_escape_classifier \
+	compute_backward_camera_particle_channels
 
 
 # =========================================================
