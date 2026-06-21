@@ -115,6 +115,8 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Only photon_observer_frame='ZAMO' is implemented in Phase 1")
     if str(values["photon_redshift_mode"]) not in {"disabled", "validated_zamo"}:
         raise ValueError("Unsupported photon_redshift_mode; expected 'disabled' or 'validated_zamo'")
+    if str(values["photon_redshift_mode"]) == "validated_zamo" and str(values["photon_observer_mode"]) != "observer_camera_projection":
+        raise ValueError("photon_redshift_mode='validated_zamo' requires photon_observer_mode='observer_camera_projection'")
     if str(values["photon_redshift_emitter_frame"]) != "ZAMO":
         raise ValueError("Only photon_redshift_emitter_frame='ZAMO' is implemented")
     if str(values["photon_redshift_observer_frame"]) != "ZAMO":

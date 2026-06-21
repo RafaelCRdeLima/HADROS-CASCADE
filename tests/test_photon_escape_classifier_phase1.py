@@ -564,6 +564,58 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
             raise AssertionError(f"Phase 4 command missing {expected}: {phase4.command}")
 
 
+def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) -> None:
+    config = {
+        "run_name": "PhotonInvalidRedshiftMode",
+        "output_dir": str(tmp / "run"),
+        "physics_mode": "uhe_cascade",
+        "black_hole_mass_msun": 3.0,
+        "spin": 0.0,
+        "camera_nx": 7,
+        "camera_ny": 5,
+        "camera_fov_deg": 60.0,
+        "camera_theta_deg": 70.0,
+        "camera_r_obs_rg": 20.0,
+        "camera_r_max_rg": 40.0,
+        "camera_step": 0.05,
+        "neutrino_energy_gev": 1.0e9,
+        "n_events": 1,
+        "seed": 1,
+        "generate_standard_scientific_plots": False,
+        "generate_dashboard": False,
+        "enable_photon_observer_camera": True,
+        "photon_observer_mode": "observer_sphere_hits",
+        "photon_observer_frame": "ZAMO",
+        "photon_null_norm_tolerance": 1.0e-8,
+        "photon_invariant_tolerance": 1.0e-6,
+        "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_fail_on_invariant_violation": True,
+        "photon_max_geodesic_steps": 1234,
+        "photon_geodesic_step_rg": 0.03,
+        "photon_min_energy_gev": 2.0,
+        "photon_camera_output_mode": "summary_only",
+        "photon_redshift_mode": "validated_zamo",
+        "photon_redshift_emitter_frame": "ZAMO",
+        "photon_redshift_observer_frame": "ZAMO",
+        "photon_redshift_energy_tolerance": 1.0e-6,
+        "photon_redshift_fail_on_invalid": False,
+        "photon_camera_projection_mode": "gnomonic_pinhole",
+        "photon_camera_fov_deg": 60.0,
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_resolution_mode": "reuse_main_camera",
+        "photon_camera_center_theta_source": "observer_inclination_deg",
+        "photon_camera_center_phi_rad": 0.25,
+        "photon_camera_clipping_mode": "keep_outside_fov",
+    }
+    try:
+        final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
+    except ValueError as exc:
+        if "observer_camera_projection" not in str(exc):
+            raise AssertionError(f"validated_zamo rejection error was unclear: {exc}") from exc
+    else:
+        raise AssertionError("validated_zamo without observer_camera_projection was accepted")
+
+
 def test_wrapper_has_no_physical_defaults() -> None:
     text = (ROOT / "scripts/science/run_kerr_photon_escape_classifier.py").read_text(encoding="utf-8")
     forbidden = [
@@ -1263,6 +1315,7 @@ def main() -> int:
             lambda: test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(base / "pipeline_phase2"),
             lambda: test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(base / "pipeline_phase3"),
             lambda: test_pipeline_runs_phase4_only_for_validated_zamo(base / "pipeline_phase4"),
+            lambda: test_pipeline_rejects_validated_zamo_without_camera_projection(base / "pipeline_phase4_reject"),
             test_wrapper_has_no_physical_defaults,
             test_pipeline_has_no_photon_physical_defaults,
             lambda: test_provenance_contains_phase1_limitations(binary, base / "provenance"),
