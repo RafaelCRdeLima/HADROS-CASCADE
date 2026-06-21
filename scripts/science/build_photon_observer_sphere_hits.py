@@ -30,6 +30,18 @@ HIT_FIELDS = [
     "relative_E_error",
     "relative_Lz_error",
     "momentum_input_mode",
+    "initial_r_rg",
+    "initial_theta_rad",
+    "initial_phi_rad",
+    "p_t_initial",
+    "p_r_initial",
+    "p_theta_initial",
+    "p_phi_initial",
+    "p_t_crossing",
+    "p_r_crossing",
+    "p_theta_crossing",
+    "p_phi_crossing",
+    "crossing_momentum_available",
 ]
 
 SUMMARY_FIELDS = [
@@ -105,6 +117,18 @@ def hit_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "relative_E_error": as_float(row, "relative_E_error"),
         "relative_Lz_error": as_float(row, "relative_Lz_error"),
         "momentum_input_mode": row.get("momentum_input_mode"),
+        "initial_r_rg": as_float(row, "initial_r_rg"),
+        "initial_theta_rad": as_float(row, "initial_theta_rad"),
+        "initial_phi_rad": as_float(row, "initial_phi_rad"),
+        "p_t_initial": as_float(row, "p_t_initial"),
+        "p_r_initial": as_float(row, "p_r_initial"),
+        "p_theta_initial": as_float(row, "p_theta_initial"),
+        "p_phi_initial": as_float(row, "p_phi_initial"),
+        "p_t_crossing": as_float(row, "p_t_crossing"),
+        "p_r_crossing": as_float(row, "p_r_crossing"),
+        "p_theta_crossing": as_float(row, "p_theta_crossing"),
+        "p_phi_crossing": as_float(row, "p_phi_crossing"),
+        "crossing_momentum_available": bool(row.get("crossing_momentum_available")),
     }
     missing = [key for key in HIT_FIELDS if hit.get(key) is None]
     if missing:

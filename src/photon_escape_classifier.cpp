@@ -55,6 +55,22 @@ struct PhotonResult {
     std::string invariant_status = "not_evaluated";
     int geodesic_steps = 0;
     std::string momentum_input_mode;
+    double initial_r_rg = std::numeric_limits<double>::quiet_NaN();
+    double initial_theta_rad = std::numeric_limits<double>::quiet_NaN();
+    double initial_phi_rad = std::numeric_limits<double>::quiet_NaN();
+    double p_initial[4] = {
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+    };
+    double p_crossing[4] = {
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+    };
+    bool crossing_momentum_available = false;
     bool observer_crossing_interpolated = false;
     double observer_crossing_r_rg = std::numeric_limits<double>::quiet_NaN();
     double observer_crossing_theta_rad = std::numeric_limits<double>::quiet_NaN();
@@ -251,6 +267,27 @@ double relative_error(double initial, double final)
     return std::abs(final - initial) / std::max(std::abs(initial), REL_EPS);
 }
 
+void store_pcov(double out[4], const GeodesicState& state)
+{
+    out[0] = state.pt;
+    out[1] = state.pr;
+    out[2] = state.ptheta;
+    out[3] = state.pphi;
+}
+
+void store_interpolated_pcov(double out[4], const GeodesicState& previous, const GeodesicState& current, double alpha)
+{
+    out[0] = previous.pt + alpha * (current.pt - previous.pt);
+    out[1] = previous.pr + alpha * (current.pr - previous.pr);
+    out[2] = previous.ptheta + alpha * (current.ptheta - previous.ptheta);
+    out[3] = previous.pphi + alpha * (current.pphi - previous.pphi);
+}
+
+bool finite_pcov(const double p[4])
+{
+    return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::isfinite(p[3]);
+}
+
 bool valid_config(const PhotonEscapeConfig& config)
 {
     return std::isfinite(config.spin)
@@ -390,6 +427,10 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         return result;
     }
 
+    result.initial_r_rg = state.r;
+    result.initial_theta_rad = state.theta;
+    result.initial_phi_rad = state.phi;
+    store_pcov(result.p_initial, state);
     result.E_killing_initial = -state.pt;
     result.Lz_initial = state.pphi;
 
@@ -405,6 +446,8 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         result.observer_crossing_r_rg = state.r;
         result.observer_crossing_theta_rad = state.theta;
         result.observer_crossing_phi_rad = state.phi;
+        store_pcov(result.p_crossing, state);
+        result.crossing_momentum_available = finite_pcov(result.p_crossing);
     }
 
     for (int step = 0; !reached && !captured && !missed && !failed && step < config.max_geodesic_steps; ++step) {
@@ -435,6 +478,8 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
             result.observer_crossing_r_rg = config.observer_radius_rg;
             result.observer_crossing_theta_rad = previous_state.theta + alpha * (state.theta - previous_state.theta);
             result.observer_crossing_phi_rad = previous_state.phi + alpha * (state.phi - previous_state.phi);
+            store_interpolated_pcov(result.p_crossing, previous_state, state, alpha);
+            result.crossing_momentum_available = finite_pcov(result.p_crossing);
             reached = true;
             break;
         }
@@ -529,6 +574,20 @@ void write_result(std::ostream& out, const PhotonResult& result)
     write_json_number(out, "relative_Lz_error", result.relative_Lz_error);
     write_json_field(out, "invariant_status", result.invariant_status);
     write_json_field(out, "momentum_input_mode", result.momentum_input_mode);
+    write_json_number(out, "initial_r_rg", result.initial_r_rg);
+    write_json_number(out, "initial_theta_rad", result.initial_theta_rad);
+    write_json_number(out, "initial_phi_rad", result.initial_phi_rad);
+    write_json_number(out, "p_t_initial", result.p_initial[0]);
+    write_json_number(out, "p_r_initial", result.p_initial[1]);
+    write_json_number(out, "p_theta_initial", result.p_initial[2]);
+    write_json_number(out, "p_phi_initial", result.p_initial[3]);
+    out << ",\"crossing_momentum_available\":" << (result.crossing_momentum_available ? "true" : "false");
+    if (result.crossing_momentum_available) {
+        write_json_number(out, "p_t_crossing", result.p_crossing[0]);
+        write_json_number(out, "p_r_crossing", result.p_crossing[1]);
+        write_json_number(out, "p_theta_crossing", result.p_crossing[2]);
+        write_json_number(out, "p_phi_crossing", result.p_crossing[3]);
+    }
     out << ",\"geodesic_steps\":" << result.geodesic_steps;
     out << ",\"observer_crossing_interpolated\":" << (result.observer_crossing_interpolated ? "true" : "false");
     write_json_number(out, "observer_crossing_r_rg", result.observer_crossing_r_rg);
@@ -626,6 +685,7 @@ void write_provenance(const std::string& path, const PhotonEscapeConfig& config,
         << "  \"momentum_input_mode\":\"per_record_required\",\n"
         << "  \"momentum_input_mode_allowed_values\":[\"zamo_tetrad\",\"global_boyer_lindquist\",\"covariant_p_mu\"],\n"
         << "  \"observer_crossing_interpolation\":\"linear in integration step; classification only, not detection\",\n"
+        << "  \"crossing_momentum_interpolation\":\"linear_between_geodesic_steps\",\n"
         << "  \"horizon_capture_definition\":\"captured_by_black_hole requires crossing from r > r_plus to r <= r_plus + photon_horizon_crossing_tolerance_rg\",\n"
         << "  \"invariant_violation_policy\":\"photon_fail_on_invariant_violation=true always classifies invariant drift as integration_failed_invariant_violation\",\n"
         << "  \"n_input_particles\":" << summary.n_input_particles << ",\n"

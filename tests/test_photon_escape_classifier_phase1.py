@@ -31,6 +31,38 @@ phase2_hits = load_module("build_photon_observer_sphere_hits", "scripts/science/
 phase3_projection = load_module("build_photon_observer_camera_projection", "scripts/science/build_photon_observer_camera_projection.py")
 
 
+P_MU_FIELDS = [
+    "p_t_initial",
+    "p_r_initial",
+    "p_theta_initial",
+    "p_phi_initial",
+    "p_t_crossing",
+    "p_r_crossing",
+    "p_theta_crossing",
+    "p_phi_crossing",
+]
+
+INITIAL_POSITION_FIELDS = [
+    "initial_r_rg",
+    "initial_theta_rad",
+    "initial_phi_rad",
+]
+
+
+def assert_finite_p_mu(row: dict[str, object], fields: list[str] = P_MU_FIELDS) -> None:
+    for field in fields:
+        value = row.get(field)
+        if value is None or not math.isfinite(float(value)):
+            raise AssertionError(f"{field} is not finite in row: {row}")
+
+
+def assert_finite_initial_position(row: dict[str, object]) -> None:
+    for field in INITIAL_POSITION_FIELDS:
+        value = row.get(field)
+        if value is None or not math.isfinite(float(value)):
+            raise AssertionError(f"{field} is not finite in row: {row}")
+
+
 def compile_backend(tmp: Path) -> Path:
     binary = tmp / "compute_kerr_photon_escape_classifier"
     cmd = [
@@ -151,6 +183,12 @@ def test_radial_outward_reaches_observer(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"observer crossing was not interpolated: {out_rows[0]}")
     if abs(float(out_rows[0]["observer_crossing_r_rg"]) - 20.0) > 1.0e-12:
         raise AssertionError(f"bad observer crossing radius: {out_rows[0]}")
+    assert_finite_p_mu(out_rows[0])
+    assert_finite_initial_position(out_rows[0])
+    if out_rows[0].get("crossing_momentum_available") is not True:
+        raise AssertionError(f"crossing momentum was not marked available: {out_rows[0]}")
+    if "observed_energy_gev" in out_rows[0]:
+        raise AssertionError(f"Phase 1 unexpectedly emitted observed_energy_gev: {out_rows[0]}")
 
 
 def test_radial_inward_captured(binary: Path, tmp: Path) -> None:
@@ -159,6 +197,11 @@ def test_radial_inward_captured(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"inward photon was not captured: {out_rows[0]}")
     if int(out_rows[0]["geodesic_steps"]) <= 0:
         raise AssertionError(f"capture did not require an integrated horizon crossing: {out_rows[0]}")
+    if out_rows[0].get("crossing_momentum_available") is not False:
+        raise AssertionError(f"captured photon should not expose crossing momentum: {out_rows[0]}")
+    for field in ["p_t_crossing", "p_r_crossing", "p_theta_crossing", "p_phi_crossing"]:
+        if field in out_rows[0]:
+            raise AssertionError(f"captured photon unexpectedly emitted {field}: {out_rows[0]}")
 
 
 def test_ambiguous_generic_momentum_rejected(binary: Path, tmp: Path) -> None:
@@ -510,6 +553,8 @@ def test_provenance_contains_phase1_limitations(binary: Path, tmp: Path) -> None
         raise AssertionError(f"provenance missing momentum_input_mode policy: {prov}")
     if float(prov.get("photon_horizon_crossing_tolerance_rg", -1.0)) < 0.0:
         raise AssertionError(f"provenance missing horizon tolerance: {prov}")
+    if prov.get("crossing_momentum_interpolation") != "linear_between_geodesic_steps":
+        raise AssertionError(f"provenance missing crossing momentum interpolation policy: {prov}")
 
 
 def phase1_hit_row(**updates: object) -> dict[str, object]:
@@ -532,6 +577,18 @@ def phase1_hit_row(**updates: object) -> dict[str, object]:
         "relative_E_error": 1.0e-9,
         "relative_Lz_error": 1.0e-8,
         "momentum_input_mode": "zamo_tetrad",
+        "initial_r_rg": 10.0,
+        "initial_theta_rad": 1.2,
+        "initial_phi_rad": 0.4,
+        "p_t_initial": -10.0,
+        "p_r_initial": 9.0,
+        "p_theta_initial": 0.1,
+        "p_phi_initial": 0.2,
+        "p_t_crossing": -10.0,
+        "p_r_crossing": 8.5,
+        "p_theta_crossing": 0.15,
+        "p_phi_crossing": 0.2,
+        "crossing_momentum_available": True,
     }
     row.update(updates)
     return row
@@ -588,6 +645,22 @@ def test_phase2_uses_interpolated_crossing_coordinates(tmp: Path) -> None:
         raise AssertionError(f"Phase 2 did not preserve crossing coordinates: {hit}")
     if hit["crossing_step_index"] != 77:
         raise AssertionError(f"Phase 2 did not preserve crossing step index: {hit}")
+
+
+def test_phase2_preserves_covariant_momentum_fields(tmp: Path) -> None:
+    source = phase1_hit_row()
+    hits, _, _, _ = run_phase2_hits(tmp, [source])
+    hit = hits[0]
+    assert_finite_p_mu(hit)
+    assert_finite_initial_position(hit)
+    for field in P_MU_FIELDS:
+        if float(hit[field]) != float(source[field]):
+            raise AssertionError(f"Phase 2 did not preserve {field}: {hit}")
+    for field in INITIAL_POSITION_FIELDS:
+        if float(hit[field]) != float(source[field]):
+            raise AssertionError(f"Phase 2 did not preserve {field}: {hit}")
+    if hit.get("crossing_momentum_available") is not True:
+        raise AssertionError(f"Phase 2 did not preserve crossing_momentum_available: {hit}")
 
 
 def test_phase2_summary_accumulates_reached_energy(tmp: Path) -> None:
@@ -856,6 +929,22 @@ def test_phase3_provenance_records_projection_contract(tmp: Path) -> None:
             raise AssertionError(f"Phase 3 provenance[{key!r}]={prov.get(key)!r}, expected {value!r}")
 
 
+def test_phase3_preserves_covariant_momentum_fields(tmp: Path) -> None:
+    theta, phi = math.radians(70.0), 0.0
+    source = phase3_hit_at(theta, phi)
+    rows, _, _, csv_text = run_phase3_projection(tmp, [source])
+    row = rows[0]
+    for field in INITIAL_POSITION_FIELDS + P_MU_FIELDS:
+        if field not in row:
+            raise AssertionError(f"Phase 3 camera CSV missing {field}: {csv_text}")
+        if float(row[field]) != float(source[field]):
+            raise AssertionError(f"Phase 3 did not preserve {field}: {row}")
+    if row.get("crossing_momentum_available") != "true":
+        raise AssertionError(f"Phase 3 did not preserve crossing_momentum_available: {row}")
+    if "observed_energy_gev" in csv_text:
+        raise AssertionError(f"Phase 3 unexpectedly emitted observed_energy_gev: {csv_text}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="hadros_photon_escape_tests_") as tmp_name:
         base = Path(tmp_name)
@@ -878,6 +967,7 @@ def main() -> int:
             lambda: test_provenance_contains_phase1_limitations(binary, base / "provenance"),
             lambda: test_phase2_excludes_non_observer_sphere_classifications(base / "phase2_filter"),
             lambda: test_phase2_uses_interpolated_crossing_coordinates(base / "phase2_crossing"),
+            lambda: test_phase2_preserves_covariant_momentum_fields(base / "phase2_momentum"),
             lambda: test_phase2_summary_accumulates_reached_energy(base / "phase2_summary"),
             lambda: test_phase2_outputs_avoid_pixel_detector_and_observed_energy_fields(base / "phase2_forbidden"),
             lambda: test_phase2_provenance_records_limitations(base / "phase2_provenance"),
@@ -890,6 +980,7 @@ def main() -> int:
             test_phase3_invalid_fov_and_resolution_rejected,
             lambda: test_phase3_outputs_avoid_observed_energy_detector_and_aperture_fields(base / "phase3_forbidden"),
             lambda: test_phase3_provenance_records_projection_contract(base / "phase3_provenance"),
+            lambda: test_phase3_preserves_covariant_momentum_fields(base / "phase3_momentum"),
         ]
         for test in tests:
             test()
