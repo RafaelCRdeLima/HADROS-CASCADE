@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,7 @@ def load_module(name: str, rel: str):
 
 final_pipeline = load_module("run_hadros_final_pipeline_photon_escape", "scripts/run_hadros_final_pipeline.py")
 phase2_hits = load_module("build_photon_observer_sphere_hits", "scripts/science/build_photon_observer_sphere_hits.py")
+phase3_projection = load_module("build_photon_observer_camera_projection", "scripts/science/build_photon_observer_camera_projection.py")
 
 
 def compile_backend(tmp: Path) -> Path:
@@ -217,7 +219,15 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_min_energy_gev",
         "photon_camera_output_mode",
         "photon_redshift_mode",
+        "photon_camera_projection_mode",
+        "photon_camera_fov_deg",
+        "photon_camera_fov_definition",
+        "photon_camera_resolution_mode",
+        "photon_camera_center_theta_source",
+        "photon_camera_center_phi_rad",
+        "photon_camera_clipping_mode",
         "observer_sphere_hits",
+        "observer_camera_projection",
     ]:
         if needle not in text:
             raise AssertionError(f"config_web_final.py missing {needle}")
@@ -254,6 +264,13 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_min_energy_gev": 2.0,
         "photon_camera_output_mode": "summary_only",
         "photon_redshift_mode": "disabled_until_validated",
+        "photon_camera_projection_mode": "gnomonic_pinhole",
+        "photon_camera_fov_deg": 60.0,
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_resolution_mode": "reuse_main_camera",
+        "photon_camera_center_theta_source": "observer_inclination_deg",
+        "photon_camera_center_phi_rad": 0.0,
+        "photon_camera_clipping_mode": "keep_outside_fov",
     }
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     step = next(item for item in steps if item.name == "photon_escape_classifier")
@@ -308,6 +325,13 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_min_energy_gev": 2.0,
         "photon_camera_output_mode": "summary_only",
         "photon_redshift_mode": "disabled_until_validated",
+        "photon_camera_projection_mode": "gnomonic_pinhole",
+        "photon_camera_fov_deg": 60.0,
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_resolution_mode": "reuse_main_camera",
+        "photon_camera_center_theta_source": "observer_inclination_deg",
+        "photon_camera_center_phi_rad": 0.0,
+        "photon_camera_clipping_mode": "keep_outside_fov",
     }
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     names = [step.name for step in steps]
@@ -331,6 +355,80 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         raise AssertionError(f"pipeline provenance missing Phase 2 enabled flag: {provenance}")
     if provenance.get("photon_observer_sphere_hits_camera_aperture") is not False:
         raise AssertionError(f"pipeline provenance must record no camera aperture hit: {provenance}")
+
+
+def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: Path) -> None:
+    config = {
+        "run_name": "PhotonCameraProjectionPipeline",
+        "output_dir": str(tmp / "run"),
+        "physics_mode": "uhe_cascade",
+        "black_hole_mass_msun": 3.0,
+        "spin": 0.0,
+        "camera_nx": 7,
+        "camera_ny": 5,
+        "camera_fov_deg": 60.0,
+        "camera_theta_deg": 70.0,
+        "camera_r_obs_rg": 20.0,
+        "camera_r_max_rg": 40.0,
+        "camera_step": 0.05,
+        "neutrino_energy_gev": 1.0e9,
+        "n_events": 1,
+        "seed": 1,
+        "generate_standard_scientific_plots": False,
+        "generate_dashboard": False,
+        "enable_photon_observer_camera": True,
+        "photon_observer_mode": "observer_camera_projection",
+        "photon_observer_frame": "ZAMO",
+        "photon_null_norm_tolerance": 1.0e-8,
+        "photon_invariant_tolerance": 1.0e-6,
+        "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_fail_on_invariant_violation": True,
+        "photon_max_geodesic_steps": 1234,
+        "photon_geodesic_step_rg": 0.03,
+        "photon_min_energy_gev": 2.0,
+        "photon_camera_output_mode": "summary_only",
+        "photon_redshift_mode": "disabled_until_validated",
+        "photon_camera_projection_mode": "gnomonic_pinhole",
+        "photon_camera_fov_deg": 60.0,
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_resolution_mode": "reuse_main_camera",
+        "photon_camera_center_theta_source": "observer_inclination_deg",
+        "photon_camera_center_phi_rad": 0.25,
+        "photon_camera_clipping_mode": "keep_outside_fov",
+    }
+    steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
+    names = [step.name for step in steps]
+    expected_order = [
+        "photon_escape_classifier",
+        "photon_observer_sphere_hit_map",
+        "photon_observer_camera_projection",
+    ]
+    for name in expected_order:
+        if name not in names:
+            raise AssertionError(f"pipeline did not include {name}: {names}")
+    if [names.index(name) for name in expected_order] != sorted(names.index(name) for name in expected_order):
+        raise AssertionError(f"Phase 3 was not scheduled after Phase 1 and Phase 2: {names}")
+    phase3 = next(step for step in steps if step.name == "photon_observer_camera_projection")
+    command_text = " ".join(phase3.command)
+    for expected in [
+        "photon_observer_sphere_hits.jsonl",
+        "photon_observer_camera.csv",
+        "photon_observer_camera_summary.csv",
+        "photon_observer_camera_provenance.json",
+        "--photon-camera-projection-mode gnomonic_pinhole",
+        "--photon-camera-fov-definition square_half_angle",
+        "--photon-camera-clipping-mode keep_outside_fov",
+    ]:
+        if expected not in command_text:
+            raise AssertionError(f"Phase 3 command missing {expected}: {phase3.command}")
+    science_config = final_pipeline.config_for_interaction_scripts(config, tmp / "run" / "cascade")
+    provenance = json.loads(science_config.read_text(encoding="utf-8"))["provenance"]
+    if provenance.get("photon_projected_to_pixels") is not True:
+        raise AssertionError(f"pipeline provenance missing pixel projection flag: {provenance}")
+    if provenance.get("photon_observer_camera_projection_enabled_effective") is not True:
+        raise AssertionError(f"pipeline provenance missing Phase 3 enabled flag: {provenance}")
+    if provenance.get("photon_observer_camera_aperture_acceptance_applied") is not False:
+        raise AssertionError(f"pipeline provenance must record no aperture acceptance: {provenance}")
 
 
 def test_wrapper_has_no_physical_defaults() -> None:
@@ -367,6 +465,13 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'config.get("photon_min_energy_gev"',
         'config.get("photon_camera_output_mode"',
         'config.get("photon_redshift_mode"',
+        'config.get("photon_camera_projection_mode"',
+        'config.get("photon_camera_fov_deg"',
+        'config.get("photon_camera_fov_definition"',
+        'config.get("photon_camera_resolution_mode"',
+        'config.get("photon_camera_center_theta_source"',
+        'config.get("photon_camera_center_phi_rad"',
+        'config.get("photon_camera_clipping_mode"',
         'photon.get("photon_observer_mode"',
         'photon.get("photon_observer_frame"',
         'photon.get("photon_null_norm_tolerance"',
@@ -378,6 +483,13 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'photon.get("photon_min_energy_gev"',
         'photon.get("photon_camera_output_mode"',
         'photon.get("photon_redshift_mode"',
+        'photon.get("photon_camera_projection_mode"',
+        'photon.get("photon_camera_fov_deg"',
+        'photon.get("photon_camera_fov_definition"',
+        'photon.get("photon_camera_resolution_mode"',
+        'photon.get("photon_camera_center_theta_source"',
+        'photon.get("photon_camera_center_phi_rad"',
+        'photon.get("photon_camera_clipping_mode"',
     ]
     for needle in forbidden:
         if needle in text:
@@ -519,6 +631,231 @@ def test_phase2_provenance_records_limitations(tmp: Path) -> None:
             raise AssertionError(f"Phase 2 provenance[{key!r}]={prov.get(key)!r}, expected {value!r}")
 
 
+def direction_from_camera_coords(theta0_deg: float, phi0: float, camera_x: float, camera_y: float) -> tuple[float, float]:
+    theta0 = math.radians(theta0_deg)
+    c, e_x, e_y = phase3_projection.camera_basis(theta0, phi0)
+    raw = (
+        c[0] + camera_x * e_x[0] + camera_y * e_y[0],
+        c[1] + camera_x * e_x[1] + camera_y * e_y[1],
+        c[2] + camera_x * e_x[2] + camera_y * e_y[2],
+    )
+    norm = math.sqrt(sum(component * component for component in raw))
+    unit = tuple(component / norm for component in raw)
+    theta = math.acos(max(-1.0, min(1.0, unit[2])))
+    phi = math.atan2(unit[1], unit[0]) % (2.0 * math.pi)
+    return theta, phi
+
+
+def run_phase3_projection(
+    tmp: Path,
+    rows: list[dict[str, object]],
+    *,
+    nx: int = 5,
+    ny: int = 5,
+    fov_deg: float = 60.0,
+    theta0_deg: float = 70.0,
+    phi0_rad: float = 0.0,
+) -> tuple[list[dict[str, str]], dict[str, str], dict[str, object], str]:
+    tmp.mkdir(parents=True, exist_ok=True)
+    input_path = tmp / "photon_observer_sphere_hits.jsonl"
+    output_csv = tmp / "photon_observer_camera.csv"
+    summary_csv = tmp / "photon_observer_camera_summary.csv"
+    provenance = tmp / "photon_observer_camera_provenance.json"
+    input_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    args = type("Args", (), {})()
+    args.input = input_path
+    args.output_csv = output_csv
+    args.summary_csv = summary_csv
+    args.provenance = provenance
+    args.camera_nx = nx
+    args.camera_ny = ny
+    args.photon_camera_fov_deg = fov_deg
+    args.photon_camera_projection_mode = "gnomonic_pinhole"
+    args.photon_camera_fov_definition = "square_half_angle"
+    args.photon_camera_resolution_mode = "reuse_main_camera"
+    args.photon_camera_center_theta_source = "observer_inclination_deg"
+    args.photon_camera_center_theta_deg = theta0_deg
+    args.photon_camera_center_phi_rad = phi0_rad
+    args.photon_camera_clipping_mode = "keep_outside_fov"
+    phase3_projection.validate_config(args)
+    theta0 = math.radians(args.photon_camera_center_theta_deg)
+    c, e_x, e_y = phase3_projection.camera_basis(theta0, args.photon_camera_center_phi_rad)
+    extent = math.tan(0.5 * math.radians(args.photon_camera_fov_deg))
+    input_rows = phase3_projection.read_jsonl(args.input)
+    out = [
+        phase3_projection.project_hit(
+            row,
+            c=c,
+            e_x=e_x,
+            e_y=e_y,
+            extent=extent,
+            nx=args.camera_nx,
+            ny=args.camera_ny,
+            projection_mode=args.photon_camera_projection_mode,
+        )
+        for row in input_rows
+    ]
+    summary = phase3_projection.build_summary(out, args.photon_camera_projection_mode)
+    phase3_projection.write_camera_csv(output_csv, out)
+    phase3_projection.write_summary_csv(summary_csv, summary)
+    phase3_projection.write_provenance(provenance, args, summary)
+    with output_csv.open("r", encoding="utf-8", newline="") as handle:
+        camera_rows = list(csv.DictReader(handle))
+    with summary_csv.open("r", encoding="utf-8", newline="") as handle:
+        summary_row = next(csv.DictReader(handle))
+    prov = json.loads(provenance.read_text(encoding="utf-8"))
+    return camera_rows, summary_row, prov, output_csv.read_text(encoding="utf-8")
+
+
+def phase3_hit_at(theta: float, phi: float, **updates: object) -> dict[str, object]:
+    row = phase1_hit_row(
+        observer_crossing_theta_rad=theta,
+        observer_crossing_phi_rad=phi,
+        crossing_step_index=12,
+    )
+    row.pop("classification", None)
+    row.update(updates)
+    return row
+
+
+def test_phase3_optical_center_maps_to_center_pixel(tmp: Path) -> None:
+    theta, phi = math.radians(70.0), 0.0
+    rows, summary, _, _ = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)])
+    row = rows[0]
+    if row["inside_fov"] != "true" or row["pixel_x"] != "2" or row["pixel_y"] != "2":
+        raise AssertionError(f"optical center did not map to central pixel: {row}")
+    if summary["n_input_hits"] != "1" or summary["n_inside_fov"] != "1":
+        raise AssertionError(f"bad Phase 3 center summary: {summary}")
+
+
+def test_phase3_camera_axis_signs_match_pixel_convention(tmp: Path) -> None:
+    center_theta, center_phi = math.radians(70.0), 0.0
+    x_theta, x_phi = direction_from_camera_coords(70.0, 0.0, 0.2, 0.0)
+    y_theta, y_phi = direction_from_camera_coords(70.0, 0.0, 0.0, 0.2)
+    rows, _, _, _ = run_phase3_projection(
+        tmp,
+        [
+            phase3_hit_at(center_theta, center_phi, particle_id=1),
+            phase3_hit_at(x_theta, x_phi, particle_id=2),
+            phase3_hit_at(y_theta, y_phi, particle_id=3),
+        ],
+    )
+    center, positive_x, positive_y = rows
+    if int(positive_x["pixel_x"]) <= int(center["pixel_x"]):
+        raise AssertionError(f"positive camera_x did not increase pixel_x: {rows}")
+    if int(positive_y["pixel_y"]) >= int(center["pixel_y"]):
+        raise AssertionError(f"positive camera_y did not decrease pixel_y: {rows}")
+
+
+def test_phase3_fov_edge_clamps_to_edge_pixel(tmp: Path) -> None:
+    extent = math.tan(0.5 * math.radians(60.0))
+    theta, phi = direction_from_camera_coords(70.0, 0.0, extent, 0.0)
+    rows, _, _, _ = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)])
+    row = rows[0]
+    if row["inside_fov"] != "true" or row["pixel_x"] != "4":
+        raise AssertionError(f"FOV upper edge did not clamp to edge pixel: {row}")
+
+
+def test_phase3_outside_fov_keeps_row_with_null_pixels(tmp: Path) -> None:
+    extent = math.tan(0.5 * math.radians(60.0))
+    theta, phi = direction_from_camera_coords(70.0, 0.0, 1.1 * extent, 0.0)
+    rows, summary, _, _ = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)])
+    row = rows[0]
+    if row["inside_fov"] != "false" or row["projection_status"] != "outside_fov":
+        raise AssertionError(f"outside-FOV row misclassified: {row}")
+    if row["pixel_x"] != "" or row["pixel_y"] != "":
+        raise AssertionError(f"outside-FOV row should keep null pixels: {row}")
+    if summary["n_outside_fov"] != "1":
+        raise AssertionError(f"bad outside-FOV summary: {summary}")
+
+
+def test_phase3_nx_ne_ny_changes_only_pixel_sampling(tmp: Path) -> None:
+    theta, phi = direction_from_camera_coords(70.0, 0.0, 0.15, -0.1)
+    rows_a, _, _, _ = run_phase3_projection(tmp / "a", [phase3_hit_at(theta, phi)], nx=5, ny=5)
+    rows_b, _, _, _ = run_phase3_projection(tmp / "b", [phase3_hit_at(theta, phi)], nx=9, ny=3)
+    row_a, row_b = rows_a[0], rows_b[0]
+    if abs(float(row_a["camera_x"]) - float(row_b["camera_x"])) > 1.0e-12:
+        raise AssertionError(f"camera_x changed with resolution: {row_a} {row_b}")
+    if abs(float(row_a["camera_y"]) - float(row_b["camera_y"])) > 1.0e-12:
+        raise AssertionError(f"camera_y changed with resolution: {row_a} {row_b}")
+    if (row_a["pixel_x"], row_a["pixel_y"]) == (row_b["pixel_x"], row_b["pixel_y"]):
+        raise AssertionError(f"pixel sampling did not change for nx != ny: {row_a} {row_b}")
+
+
+def test_phase3_phi_wraparound_projects_continuously(tmp: Path) -> None:
+    phi0 = 2.0 * math.pi - 0.01
+    theta, phi = direction_from_camera_coords(70.0, phi0, 0.05, 0.0)
+    if not (phi < 0.1 or phi > 2.0 * math.pi - 0.1):
+        raise AssertionError(f"test setup did not exercise phi wraparound: {phi}")
+    rows, _, _, _ = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)], phi0_rad=phi0)
+    row = rows[0]
+    if abs(float(row["camera_x"]) - 0.05) > 1.0e-12:
+        raise AssertionError(f"phi wraparound projection discontinuity: {row}")
+
+
+def test_phase3_invalid_fov_and_resolution_rejected() -> None:
+    args = type("Args", (), {})()
+    args.camera_nx = 5
+    args.camera_ny = 5
+    args.photon_camera_fov_deg = 60.0
+    args.photon_camera_projection_mode = "gnomonic_pinhole"
+    args.photon_camera_fov_definition = "square_half_angle"
+    args.photon_camera_resolution_mode = "reuse_main_camera"
+    args.photon_camera_center_theta_source = "observer_inclination_deg"
+    args.photon_camera_center_theta_deg = 70.0
+    args.photon_camera_center_phi_rad = 0.0
+    args.photon_camera_clipping_mode = "keep_outside_fov"
+    for key, value in [
+        ("photon_camera_fov_deg", 0.0),
+        ("photon_camera_fov_deg", 180.0),
+        ("camera_nx", 0),
+        ("camera_ny", 0),
+        ("photon_camera_center_theta_deg", 0.0),
+    ]:
+        old = getattr(args, key)
+        setattr(args, key, value)
+        try:
+            phase3_projection.validate_config(args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid Phase 3 config was accepted: {key}={value}")
+        setattr(args, key, old)
+
+
+def test_phase3_outputs_avoid_observed_energy_detector_and_aperture_fields(tmp: Path) -> None:
+    theta, phi = math.radians(70.0), 0.0
+    rows, _, _, csv_text = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)])
+    forbidden_text = ["observed_energy_gev", "detector", "aperture"]
+    for forbidden in forbidden_text:
+        if forbidden in csv_text:
+            raise AssertionError(f"Phase 3 camera CSV contains forbidden field {forbidden}: {csv_text}")
+    for forbidden in forbidden_text:
+        if forbidden in rows[0]:
+            raise AssertionError(f"Phase 3 camera row contains forbidden field {forbidden}: {rows[0]}")
+
+
+def test_phase3_provenance_records_projection_contract(tmp: Path) -> None:
+    theta, phi = math.radians(70.0), 0.0
+    _, _, prov, _ = run_phase3_projection(tmp, [phase3_hit_at(theta, phi)])
+    expected = {
+        "phase": "photon_observer_camera_projection",
+        "projected_to_pixels": True,
+        "observer_sphere_crossing_is_detection": False,
+        "observed_energy_available": False,
+        "detector_model_applied": False,
+        "instrument_response_applied": False,
+        "aperture_acceptance_applied": False,
+        "projection_mode": "gnomonic_pinhole",
+        "photon_observer_mode": "observer_camera_projection",
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_clipping_mode": "keep_outside_fov",
+    }
+    for key, value in expected.items():
+        if prov.get(key) != value:
+            raise AssertionError(f"Phase 3 provenance[{key!r}]={prov.get(key)!r}, expected {value!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="hadros_photon_escape_tests_") as tmp_name:
         base = Path(tmp_name)
@@ -535,6 +872,7 @@ def main() -> int:
             test_config_web_contains_all_parameters,
             lambda: test_pipeline_passes_all_parameters(base / "pipeline"),
             lambda: test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(base / "pipeline_phase2"),
+            lambda: test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(base / "pipeline_phase3"),
             test_wrapper_has_no_physical_defaults,
             test_pipeline_has_no_photon_physical_defaults,
             lambda: test_provenance_contains_phase1_limitations(binary, base / "provenance"),
@@ -543,6 +881,15 @@ def main() -> int:
             lambda: test_phase2_summary_accumulates_reached_energy(base / "phase2_summary"),
             lambda: test_phase2_outputs_avoid_pixel_detector_and_observed_energy_fields(base / "phase2_forbidden"),
             lambda: test_phase2_provenance_records_limitations(base / "phase2_provenance"),
+            lambda: test_phase3_optical_center_maps_to_center_pixel(base / "phase3_center"),
+            lambda: test_phase3_camera_axis_signs_match_pixel_convention(base / "phase3_axis"),
+            lambda: test_phase3_fov_edge_clamps_to_edge_pixel(base / "phase3_edge"),
+            lambda: test_phase3_outside_fov_keeps_row_with_null_pixels(base / "phase3_outside"),
+            lambda: test_phase3_nx_ne_ny_changes_only_pixel_sampling(base / "phase3_aspect"),
+            lambda: test_phase3_phi_wraparound_projects_continuously(base / "phase3_wrap"),
+            test_phase3_invalid_fov_and_resolution_rejected,
+            lambda: test_phase3_outputs_avoid_observed_energy_detector_and_aperture_fields(base / "phase3_forbidden"),
+            lambda: test_phase3_provenance_records_projection_contract(base / "phase3_provenance"),
         ]
         for test in tests:
             test()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -88,6 +89,13 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_min_energy_gev",
         "photon_camera_output_mode",
         "photon_redshift_mode",
+        "photon_camera_projection_mode",
+        "photon_camera_fov_deg",
+        "photon_camera_fov_definition",
+        "photon_camera_resolution_mode",
+        "photon_camera_center_theta_source",
+        "photon_camera_center_phi_rad",
+        "photon_camera_clipping_mode",
     ]
     values = {}
     for key in required_keys:
@@ -97,14 +105,28 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             values[key] = config[key]
         else:
             raise ValueError(f"Missing required photon_escape_classifier parameter: {key}")
-    if str(values["photon_observer_mode"]) not in {"escape_classifier", "observer_sphere_hits"}:
-        raise ValueError("Unsupported photon_observer_mode; expected 'escape_classifier' or 'observer_sphere_hits'")
+    if str(values["photon_observer_mode"]) not in {"escape_classifier", "observer_sphere_hits", "observer_camera_projection"}:
+        raise ValueError("Unsupported photon_observer_mode; expected 'escape_classifier', 'observer_sphere_hits', or 'observer_camera_projection'")
     if str(values["photon_observer_frame"]) != "ZAMO":
         raise ValueError("Only photon_observer_frame='ZAMO' is implemented in Phase 1")
     if str(values["photon_redshift_mode"]) != "disabled_until_validated":
         raise ValueError("Photon redshift is not implemented in Phase 1")
     if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
         raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
+    if str(values["photon_camera_projection_mode"]) != "gnomonic_pinhole":
+        raise ValueError("photon_camera_projection_mode must be gnomonic_pinhole")
+    if str(values["photon_camera_fov_definition"]) != "square_half_angle":
+        raise ValueError("photon_camera_fov_definition must be square_half_angle")
+    if str(values["photon_camera_resolution_mode"]) != "reuse_main_camera":
+        raise ValueError("photon_camera_resolution_mode must be reuse_main_camera")
+    if str(values["photon_camera_center_theta_source"]) != "observer_inclination_deg":
+        raise ValueError("photon_camera_center_theta_source must be observer_inclination_deg")
+    if str(values["photon_camera_clipping_mode"]) != "keep_outside_fov":
+        raise ValueError("photon_camera_clipping_mode must be keep_outside_fov")
+    if not (0.0 < float(values["photon_camera_fov_deg"]) < 180.0):
+        raise ValueError("photon_camera_fov_deg must satisfy 0 < value < 180")
+    if not math.isfinite(float(values["photon_camera_center_phi_rad"])):
+        raise ValueError("photon_camera_center_phi_rad must be finite")
     if float(values["photon_null_norm_tolerance"]) <= 0.0:
         raise ValueError("photon_null_norm_tolerance must be > 0")
     if float(values["photon_invariant_tolerance"]) <= 0.0:
@@ -238,6 +260,7 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "full_transport_available": False,
     }
     photon = photon_escape_config(config)
+    photon_mode = str(photon["photon_observer_mode"])
     provenance.update({
         "photon_escape_classifier_enabled_effective": as_bool(photon["enable_photon_observer_camera"]),
         "photon_observer_mode": photon["photon_observer_mode"],
@@ -251,22 +274,42 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_min_energy_gev": float(photon["photon_min_energy_gev"]),
         "photon_camera_output_mode": photon["photon_camera_output_mode"],
         "photon_redshift_mode": photon["photon_redshift_mode"],
+        "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
+        "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
+        "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
+        "photon_camera_resolution_mode": photon["photon_camera_resolution_mode"],
+        "photon_camera_center_theta_source": photon["photon_camera_center_theta_source"],
+        "photon_camera_center_phi_rad": float(photon["photon_camera_center_phi_rad"]),
+        "photon_camera_clipping_mode": photon["photon_camera_clipping_mode"],
         "photon_camera_physical_interpretation": "photon_escape_classifier",
         "photon_camera_is_full_observational_transport": False,
-        "photon_projected_to_pixels": False,
+        "photon_projected_to_pixels": photon_mode == "observer_camera_projection",
         "photon_observer_sphere_crossing_is_detection": False,
         "photon_observer_sphere_hit_map_enabled_effective": (
             as_bool(photon["enable_photon_observer_camera"])
-            and str(photon["photon_observer_mode"]) == "observer_sphere_hits"
+            and photon_mode in {"observer_sphere_hits", "observer_camera_projection"}
         ),
         "photon_observer_sphere_phase": (
             "photon_observer_sphere_hit_map"
-            if str(photon["photon_observer_mode"]) == "observer_sphere_hits"
+            if photon_mode in {"observer_sphere_hits", "observer_camera_projection"}
             else "not_run"
         ),
         "photon_observer_sphere_projected_to_pixels": False,
         "photon_observer_sphere_hits_camera_aperture": False,
         "photon_observer_sphere_observed_energy_available": False,
+        "photon_observer_camera_projection_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and photon_mode == "observer_camera_projection"
+        ),
+        "photon_observer_camera_phase": (
+            "photon_observer_camera_projection"
+            if photon_mode == "observer_camera_projection"
+            else "not_run"
+        ),
+        "photon_observer_camera_observed_energy_available": False,
+        "photon_observer_camera_detector_model_applied": False,
+        "photon_observer_camera_instrument_response_applied": False,
+        "photon_observer_camera_aperture_acceptance_applied": False,
     })
     path = output_dir / "final_pipeline_science_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -498,6 +541,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
     ])
     photon = photon_escape_config(config)
     if as_bool(photon["enable_photon_observer_camera"]):
+        photon_mode = str(photon["photon_observer_mode"])
         fail_on_invariant = "true" if as_bool(photon["photon_fail_on_invariant_violation"]) else "false"
         steps.append(
             FinalStep(
@@ -547,7 +591,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                 ],
             )
         )
-        if str(photon["photon_observer_mode"]) == "observer_sphere_hits":
+        if photon_mode in {"observer_sphere_hits", "observer_camera_projection"}:
             steps.append(
                 FinalStep(
                     "photon_observer_sphere_hit_map",
@@ -569,6 +613,60 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                         cascade / "photon_observer_sphere_hits.jsonl",
                         cascade / "photon_observer_sphere_summary.csv",
                         cascade / "photon_observer_sphere_provenance.json",
+                    ],
+                )
+            )
+        if photon_mode == "observer_camera_projection":
+            camera_nx = int(config.get("camera_nx", 0))
+            camera_ny = int(config.get("camera_ny", 0))
+            camera_theta_deg = float(config.get("camera_theta_deg", float("nan")))
+            if camera_nx <= 0:
+                raise ValueError("camera_nx must be > 0 for photon observer camera projection")
+            if camera_ny <= 0:
+                raise ValueError("camera_ny must be > 0 for photon observer camera projection")
+            if not math.isfinite(camera_theta_deg):
+                raise ValueError("camera_theta_deg must be finite for photon observer camera projection")
+            if abs(math.sin(math.radians(camera_theta_deg))) < 1.0e-8:
+                raise ValueError("photon camera optical center is too close to a spherical pole")
+            steps.append(
+                FinalStep(
+                    "photon_observer_camera_projection",
+                    [
+                        sys.executable,
+                        "scripts/science/build_photon_observer_camera_projection.py",
+                        "--input",
+                        str(cascade / "photon_observer_sphere_hits.jsonl"),
+                        "--output-csv",
+                        str(cascade / "photon_observer_camera.csv"),
+                        "--summary-csv",
+                        str(cascade / "photon_observer_camera_summary.csv"),
+                        "--provenance",
+                        str(cascade / "photon_observer_camera_provenance.json"),
+                        "--camera-nx",
+                        str(camera_nx),
+                        "--camera-ny",
+                        str(camera_ny),
+                        "--photon-camera-fov-deg",
+                        str(photon["photon_camera_fov_deg"]),
+                        "--photon-camera-projection-mode",
+                        str(photon["photon_camera_projection_mode"]),
+                        "--photon-camera-fov-definition",
+                        str(photon["photon_camera_fov_definition"]),
+                        "--photon-camera-resolution-mode",
+                        str(photon["photon_camera_resolution_mode"]),
+                        "--photon-camera-center-theta-source",
+                        str(photon["photon_camera_center_theta_source"]),
+                        "--photon-camera-center-theta-deg",
+                        str(camera_theta_deg),
+                        "--photon-camera-center-phi-rad",
+                        str(photon["photon_camera_center_phi_rad"]),
+                        "--photon-camera-clipping-mode",
+                        str(photon["photon_camera_clipping_mode"]),
+                    ],
+                    [
+                        cascade / "photon_observer_camera.csv",
+                        cascade / "photon_observer_camera_summary.csv",
+                        cascade / "photon_observer_camera_provenance.json",
                     ],
                 )
             )
