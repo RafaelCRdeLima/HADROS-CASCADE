@@ -1,0 +1,81 @@
+particles:
+  - pdg_id: 22
+    particle_name: gamma
+    channel: gamma
+  - pdg_id: 11
+    particle_name: e-
+    channel: electromagnetic
+  - pdg_id: -11
+    particle_name: e+
+    channel: electromagnetic
+  - pdg_id: 12
+    particle_name: nu_e
+    channel: neutrino
+  - pdg_id: -12
+    particle_name: anti_nu_e
+    channel: neutrino
+  - pdg_id: 14
+    particle_name: nu_mu
+    channel: neutrino
+  - pdg_id: -14
+    particle_name: anti_nu_mu
+    channel: neutrino
+  - pdg_id: 16
+    particle_name: nu_tau
+    channel: neutrino
+  - pdg_id: -16
+    particle_name: anti_nu_tau
+    channel: neutrino
+  - pdg_id: 211
+    particle_name: pi+
+    channel: pion_charged
+  - pdg_id: -211
+    particle_name: pi-
+    channel: pion_charged
+  - pdg_id: 111
+    particle_name: pi0
+    channel: pion_neutral
+  - pdg_id: 2212
+    particle_name: proton
+    channel: baryon
+  - pdg_id: -2212
+    particle_name: anti_proton
+    channel: baryon
+  - pdg_id: 2112
+    particle_name: neutron
+    channel: baryon
+  - pdg_id: -2112
+    particle_name: anti_neutron
+    channel: baryon
+  - pdg_id: 321
+    particle_name: K+
+    channel: kaon
+  - pdg_id: -321
+    particle_name: K-
+    channel: kaon
+  - pdg_id: 311
+    particle_name: K0
+    channel: kaon
+  - pdg_id: -311
+    particle_name: anti_K0
+    channel: kaon
+  - pdg_id: 13
+    particle_name: mu-
+    channel: muon
+  - pdg_id: -13
+    particle_name: mu+
+    channel: muon
+aggregated_channels:
+  - gamma
+  - electromagnetic
+  - neutrino
+  - pion_charged
+  - pion_neutral
+  - kaon
+  - baryon
+  - hadronic
+  - muon
+  - deposited
+  - invisible
+  - unsupported_uhe
+  - unknown

@@ -1,0 +1,106 @@
+# HADROS-CASCADE generated outputs
+/output/
+/outputs/
+/plots/
+/dashboard/
+/runs/
+/jobs/
+
+# Build products and local executables
+/build/
+/bin/
+/lib/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake-build-*/
+/compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.d
+*.mod
+*.pcm
+/compute_kerr_geodesics
+/compute_kerr_particle_camera
+/compute_backward_camera_particle_channels
+/dump_kerr_camera_rays
+/hadros_camera_preview
+/hadros_geodesic_preview
+/cascade_geant4_local_box
+/powheg_pythia_hadros_driver
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# LaTeX generated artifacts; keep .tex/.bib source files tracked
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+
+# Heavy generator artifacts from GEANT4 / POWHEG / PYTHIA
+*.root
+*.hepmc
+*.hepmc3
+*.lhe
+*.lhe.gz
+pwgevents*.*
+pwg*.dat
+pwg*.top
+pythia*.log
+geant4*.log
+G4*.dat
+g4*.root
+*.hits
+*.trajectories
+
+# Large binary/scientific data products
+*.bin
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.fits
+
+# Local editor/agent state
+/.claude/
+/.codex/
+/.agents/
+/.idea/
+/.vscode/
+
+# Accidental path-fragment directories from shell/path mistakes
+/+/
+/Collapsar/
+/Neutrinos/

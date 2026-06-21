@@ -1,0 +1,75 @@
+{
+  "black_hole": {
+    "black_hole_mass_msun": "3",
+    "spin": "0.8"
+  },
+  "black_hole_mass_msun": "3",
+  "camera": {
+    "black_hole_mass_msun": "3",
+    "field_of_view_deg": "60",
+    "observer_inclination_deg": "70",
+    "observer_radius_rg": "80",
+    "ray_max_radius_rg": "120",
+    "ray_step": "0.05",
+    "resolution": "8",
+    "spin": "0.8"
+  },
+  "camera_fov_deg": "60",
+  "camera_nx": "8",
+  "camera_ny": "8",
+  "camera_r_max_rg": "120",
+  "camera_r_obs_rg": "80",
+  "camera_step": "0.05",
+  "camera_theta_deg": "70",
+  "diagnostic_plots": false,
+  "dis_model": "both",
+  "generate_dashboard": true,
+  "generate_standard_scientific_plots": true,
+  "n_events": "10",
+  "neutrino_energy_gev": "1000000000",
+  "output_dir": "output/Run_teste",
+  "outputs": {
+    "dashboard": true,
+    "diagnostic_plots": false,
+    "science_plots": true,
+    "validation_plots": true
+  },
+  "physics_mode": "uhe_particles",
+  "powheg_executable_path": "",
+  "produce_uhe_collision_particles": true,
+  "pythia8_config_path": "",
+  "run": {
+    "output_dir": "output/Run_teste",
+    "physics_mode": "uhe_particles",
+    "run_name": "Run_teste"
+  },
+  "run_mev_torus_neutrinos": false,
+  "run_name": "Run_teste",
+  "seed": "12345",
+  "sigma_table_path": "data/sigma/sigma_nuN_CC_GBW.dat",
+  "source_model": "funnel_wall",
+  "spectral_bins": "1",
+  "spin": "0.8",
+  "torus": {
+    "ambient_density": "1",
+    "density_scale": "1",
+    "funnel_enabled": true,
+    "interpolation": "loglog",
+    "rho_floor": "0",
+    "torus_model": "analytic_torus",
+    "vertical_closure": "gaussian"
+  },
+  "uhe_dis": {
+    "dis_model": "both",
+    "energy_gev": "1000000000",
+    "n_events": "10",
+    "powheg_executable": "",
+    "pythia8_config": "",
+    "seed": "12345",
+    "sigma_table": "data/sigma/sigma_nuN_CC_GBW.dat",
+    "source_geometry": "axial_point",
+    "source_model": "funnel_wall",
+    "spectral_bins": "1"
+  },
+  "validation_plots": true
+}

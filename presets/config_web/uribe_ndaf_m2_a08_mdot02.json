@@ -1,0 +1,94 @@
+{
+  "dipoleValues": {},
+  "name": "uribe_ndaf_m2_a08_mdot02",
+  "values": {
+    "black_hole": {
+      "ASPIN": "0.8",
+      "MBH_MSUN": "2.0"
+    },
+    "camera": {
+      "CAM_NX": "32",
+      "CAM_NY": "32",
+      "CAM_THETA_DEG": "15.0"
+    },
+    "density_profile": {
+      "DENSITY_PROFILE": "tabulated_disk_funnel"
+    },
+    "dis_sigma": {
+      "SIGMA_MODE": "existing_table",
+      "SIGMA_TABLE_PATH": "data/sigma/sigma_nuN_CC_GBW.dat"
+    },
+    "run": {
+      "RUN_NAME": "paper2_uribe_funnel_pilot"
+    },
+    "tabulated_ambient": {
+      "TABULATED_AMBIENT_APPLY_INSIDE_FUNNEL": "0",
+      "TABULATED_AMBIENT_APPLY_OUTSIDE_DISK": "1",
+      "TABULATED_AMBIENT_APPLY_OUTSIDE_TABULATED_DOMAIN": "1",
+      "TABULATED_AMBIENT_DENSITY_FLOOR": "0.0",
+      "TABULATED_AMBIENT_ENABLED": "1",
+      "TABULATED_AMBIENT_MODE": "constant_floor",
+      "TABULATED_AMBIENT_POWERLAW_INDEX": "2.0",
+      "TABULATED_AMBIENT_R0_RG": "10.0",
+      "TABULATED_AMBIENT_RHO0": "1.0",
+      "TABULATED_AMBIENT_R_MAX_RG": "2000.0",
+      "TABULATED_AMBIENT_R_MIN_RG": "0.0",
+      "TABULATED_AMBIENT_SMOOTH_EDGES": "1",
+      "TABULATED_AMBIENT_THETA_MAX_DEG": "180.0",
+      "TABULATED_AMBIENT_THETA_MIN_DEG": "0.0"
+    },
+    "tabulated_disk": {
+      "TABULATED_DATASET_NAME": "uribe_ndaf_m2_a08_mdot02",
+      "TABULATED_DENSITY_PATH": "data/uribe/disk-mass-density.dat",
+      "TABULATED_DENSITY_UNIT": "uribe_1e10_gcm3",
+      "TABULATED_EXTRAPOLATION": "zero",
+      "TABULATED_HEIGHT_PATH": "data/uribe/disk-height.dat",
+      "TABULATED_HEIGHT_SCALE": "1.0",
+      "TABULATED_HEIGHT_UNIT": "cm",
+      "TABULATED_INIT_PATH": "data/uribe/InitSystemParameters.dat",
+      "TABULATED_MEV_TAU_PATH": "data/uribe/neutrino-optical-depth---ne_antine_nx_antinx.dat",
+      "TABULATED_NEUTRINO_DENSITY_PATH": "data/uribe/neutrino-number-density---ne_antine_nx_antinx.dat",
+      "TABULATED_RADIAL_COORDINATE": "uribe_xr_squared_rg",
+      "TABULATED_RADIAL_INTERPOLATION": "loglog",
+      "TABULATED_RHO_CEIL": "0.0",
+      "TABULATED_RHO_FLOOR": "0.0",
+      "TABULATED_RHO_SCALE": "1.0",
+      "TABULATED_TEMPERATURE_PATH": "data/uribe/disk-temp.dat",
+      "TABULATED_VERTICAL_CLOSURE": "gaussian",
+      "TABULATED_VERTICAL_COLUMN_CONVENTION": "one_scale_height_rhoH",
+      "TABULATED_YE_PATH": "data/uribe/disk-electron-fraction.dat"
+    },
+    "tabulated_funnel": {
+      "TABULATED_FUNNEL_DTHETA_DEG": "5.0",
+      "TABULATED_FUNNEL_ENABLED": "1",
+      "TABULATED_FUNNEL_RADIAL_POWER": "2.0",
+      "TABULATED_FUNNEL_RHO_AXIS": "1.0",
+      "TABULATED_FUNNEL_RHO_COCOON": "1.0e2",
+      "TABULATED_FUNNEL_RHO_WALL": "1.0e3",
+      "TABULATED_FUNNEL_R_IN_RG": "1.5",
+      "TABULATED_FUNNEL_R_OUT_RG": "120.0",
+      "TABULATED_FUNNEL_SMOOTHING_DEG": "1.5",
+      "TABULATED_FUNNEL_THETA_DEG": "15.0"
+    },
+    "tabulated_uhe_source": {
+      "TABULATED_SOURCE_DIRECTION": "collimated",
+      "TABULATED_SOURCE_ECUT_GEV": "1.0e12",
+      "TABULATED_SOURCE_E_MAX_GEV": "1.0e12",
+      "TABULATED_SOURCE_E_MIN_GEV": "1.0e5",
+      "TABULATED_SOURCE_GAMMA": "2.0",
+      "TABULATED_SOURCE_GEOMETRY": "axial_point",
+      "TABULATED_SOURCE_HEIGHT_RG": "20.0",
+      "TABULATED_SOURCE_LUMINOSITY": "0.0",
+      "TABULATED_SOURCE_RADIUS_RG": "1.0",
+      "TABULATED_SOURCE_THETA_DEG": "10.0",
+      "TABULATED_SOURCE_Z0_RG": "3.0"
+    },
+    "uhe_mode": {
+      "SPECTRAL_MODEL": "monochromatic"
+    },
+    "uhe_monochromatic": {
+      "ENU": "1.0e9",
+      "USE_F3": "1"
+    }
+  }
+}

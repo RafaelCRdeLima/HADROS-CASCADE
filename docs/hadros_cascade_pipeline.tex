@@ -1,0 +1,735 @@
+% HADROS-CASCADE Pipeline Documentation
+% Compile with: pdflatex hadros_cascade_pipeline.tex (twice for cross-references)
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{microtype}
+\usepackage{mdframed}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{lmodern}
+
+\geometry{
+  top=2.5cm, bottom=2.5cm,
+  left=2.5cm, right=2.5cm,
+  headheight=14pt
+}
+
+% Colors
+\definecolor{darkgreen}{RGB}{26,46,36}
+\definecolor{brown}{RGB}{140,88,0}
+\definecolor{codeblue}{RGB}{0,80,160}
+\definecolor{codegray}{RGB}{100,100,100}
+\definecolor{lightbg}{RGB}{245,247,243}
+\definecolor{boxborder}{RGB}{180,200,172}
+
+% Header/footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{darkgreen}{\textbf{HADROS-CASCADE}}}
+\fancyhead[R]{\small\textcolor{codegray}{Scientific Pipeline Documentation}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Section colors
+\titleformat{\section}{\large\bfseries\color{darkgreen}}{{\thesection.}}{0.5em}{}[\vspace{-2pt}\rule{\linewidth}{0.6pt}]
+\titleformat{\subsection}{\normalsize\bfseries\color{darkgreen!80!black}}{{\thesubsection}}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{brown}}{{\thesubsubsection}}{0.5em}{}
+
+% Code listings
+\lstset{
+  basicstyle=\small\ttfamily,
+  keywordstyle=\color{codeblue}\bfseries,
+  commentstyle=\color{codegray}\itshape,
+  backgroundcolor=\color{lightbg},
+  frame=single,
+  rulecolor=\color{boxborder},
+  breaklines=true,
+  columns=flexible,
+}
+
+% Physics box environment
+\newmdenv[
+  backgroundcolor=lightbg,
+  linecolor=boxborder,
+  linewidth=1pt,
+  innerleftmargin=10pt,
+  innerrightmargin=10pt,
+  innertopmargin=8pt,
+  innerbottommargin=8pt,
+  skipabove=6pt,
+  skipbelow=6pt,
+]{physbox}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=darkgreen,
+  citecolor=brown,
+  urlcolor=codeblue,
+  pdftitle={HADROS-CASCADE: Scientific Pipeline Documentation},
+  pdfauthor={HADROS-CASCADE},
+}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\color{darkgreen}\rule{\linewidth}{2pt}}\\[0.8cm]
+  {\Huge\bfseries\color{darkgreen} HADROS-CASCADE}\\[0.3cm]
+  {\Large\color{brown} Scientific Pipeline Documentation}\\[0.5cm]
+  {\color{darkgreen}\rule{\linewidth}{2pt}}\\[1.5cm]
+
+  {\large UHE Neutrino Deep Inelastic Scattering\\
+  in Kerr Black Hole Spacetime:\\[0.3cm]
+  From Incoming Geodesic to Hadronic Cascade\\
+  and Backward Camera Observation}\\[2cm]
+
+  \begin{tabular}{ll}
+    \textbf{Pipeline:} & HADROS-CASCADE \\[4pt]
+    \textbf{Physics:}  & UHE $\nu$ DIS $+$ GEANT4 $+$ Kerr geodesics \\[4pt]
+    \textbf{Backends:} & POWHEG-DIS $+$ PYTHIA~8 $+$ GEANT4 \\[4pt]
+    \textbf{Date:}     & June 2026 \\
+  \end{tabular}
+
+  \vfill
+  {\small\color{codegray}
+  Gravitational Lensing $\cdot$ Kerr Null Geodesics $\cdot$ NLO DIS $\cdot$ Hadronic Showers\\
+  ZAMO Tetrads $\cdot$ GBW/IIM Saturation Models $\cdot$ Backward Ray Tracing
+  }
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview and Physical Motivation}
+
+HADROS-CASCADE is a Monte Carlo pipeline designed to simulate ultra-high-energy (UHE) neutrino interactions in the vicinity of a rotating (Kerr) black hole embedded in an accreting environment --- a collapsar. In HADROS-CASCADE, secondary particles are currently mapped with a particle-ray association camera: cascade products are associated with sampled Kerr rays by spatial and local angular criteria. This is not full transport of secondary particles to a distant observer.
+
+The pipeline couples four major physics domains:
+\begin{enumerate}[leftmargin=2cm]
+  \item \textbf{General Relativity:} Kerr metric, null geodesic integration (backward ray tracing), ZAMO orthonormal tetrad frame.
+  \item \textbf{High-Energy QCD:} NLO DIS cross sections (GBW/IIM saturation models), POWHEG-DIS event generation, PYTHIA~8 parton shower and hadronization.
+  \item \textbf{Particle Transport:} Full hadronic and electromagnetic cascade via GEANT4 in a local flat-space box at the interaction point.
+  \item \textbf{Particle-Ray Association Mapping:} Backward Kerr geodesic sampling, cascade-origin/particle-ray association, interaction-probability weighting.
+\end{enumerate}
+
+Figure~\ref{fig:pipeline_overview} summarizes the execution order.
+
+\begin{figure}[h!]
+\centering
+\begin{mdframed}[backgroundcolor=lightbg, linecolor=boxborder]
+\small\centering
+\[
+\underbrace{\text{Kerr Geodesics}}_{\text{Step 1}}
+\;\longrightarrow\;
+\underbrace{\text{Interaction Points}}_{\text{Step 2}}
+\;\longrightarrow\;
+\underbrace{\text{POWHEG+PYTHIA}}_{\text{Step 3}}
+\;\longrightarrow\;
+\underbrace{\text{GEANT4 Cascade}}_{\text{Step 4}}
+\]
+\[
+\;\longrightarrow\;
+\underbrace{\text{Backward Camera}}_{\text{Step 5}}
+\;\longrightarrow\;
+\underbrace{\text{Ray$\leftrightarrow$Event Link}}_{\text{Step 6}}
+\;\longrightarrow\;
+\underbrace{\text{GBW/IIM Weighting}}_{\text{Step 7}}
+\;\longrightarrow\;
+\underbrace{\text{Figures \& Dashboard}}_{\text{Step 8}}
+\]
+\end{mdframed}
+\caption{Ordered execution of the HADROS-CASCADE pipeline. Each arrow represents a handoff of data (JSONL, binary, CSV) between steps.}
+\label{fig:pipeline_overview}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 1: Kerr Null Geodesic Tracing}
+\label{sec:geodesics}
+
+\subsection{Physical Role}
+
+The first step establishes the photon/neutrino path geometry. A camera is placed at observer position $(r_\mathrm{obs},\,\theta_\mathrm{obs})$ in Boyer--Lindquist (BL) coordinates. For each pixel $(i,j)$ of the $N_x \times N_y$ detector, a null ray is fired \emph{backward} (from observer toward the source region) and integrated through the Kerr metric until it either crosses the outer torus boundary $r_\mathrm{max}$ or is captured by the black hole. The geodesic records the trajectory, cumulative column density, and optical depth at each step.
+
+\subsection{The Kerr Metric}
+
+In Boyer--Lindquist coordinates $(t, r, \theta, \phi)$, with $c = G = M_\bullet = 1$ (gravitational units, so distances in $r_g = GM_\bullet/c^2$), the Kerr line element is \cite{Kerr1963, Misner1973}:
+\begin{equation}
+  ds^2 = -\left(1 - \frac{2r}{\Sigma}\right)dt^2 - \frac{4ar\sin^2\theta}{\Sigma}\,dt\,d\phi
+         + \frac{\Sigma}{\Delta}\,dr^2 + \Sigma\,d\theta^2
+         + \frac{A\sin^2\theta}{\Sigma}\,d\phi^2,
+  \label{eq:kerr}
+\end{equation}
+where the auxiliary functions are:
+\begin{align}
+  \Sigma &= r^2 + a^2\cos^2\theta, \label{eq:sigma}\\
+  \Delta &= r^2 - 2r + a^2, \label{eq:delta}\\
+  A &= (r^2 + a^2)^2 - a^2\Delta\sin^2\theta. \label{eq:A}
+\end{align}
+
+The spin parameter $a \in [0,\,1)$ (in units of $M_\bullet$) characterizes frame dragging; $a=0$ reduces to the Schwarzschild metric. The outer event horizon is located at:
+\begin{equation}
+  r_+ = 1 + \sqrt{1-a^2}.
+\end{equation}
+
+The non-zero contravariant metric components needed for geodesic integration are:
+\begin{align}
+  g^{tt} &= -\frac{A}{\Sigma\Delta}, \quad
+  g^{t\phi} = -\frac{2ar}{\Sigma\Delta}, \quad
+  g^{rr} = \frac{\Delta}{\Sigma}, \quad
+  g^{\theta\theta} = \frac{1}{\Sigma}, \quad
+  g^{\phi\phi} = \frac{\Sigma - 2r}{A\sin^2\theta}.
+\end{align}
+
+\subsection{Null Geodesic Equations}
+
+Geodesics are integrated in the Hamiltonian formulation \cite{MTW, Fuerst2004}. Define the 8-dimensional phase-space vector $(x^\mu, p_\mu)$ where $p_\mu$ is the covariant four-momentum (with $p_0 < 0$ for future-directed rays). The geodesic equations are:
+\begin{equation}
+  \frac{dx^\mu}{d\lambda} = g^{\mu\nu} p_\nu,
+  \qquad
+  \frac{dp_\mu}{d\lambda} = -\frac{1}{2}\,\frac{\partial g^{\alpha\beta}}{\partial x^\mu}\,p_\alpha p_\beta,
+  \label{eq:geodesic}
+\end{equation}
+subject to the null constraint:
+\begin{equation}
+  H = \frac{1}{2}\,g^{\mu\nu} p_\mu p_\nu = 0.
+  \label{eq:null}
+\end{equation}
+
+Two constants of motion reduce the integration to 4 first-order ODEs. The conserved energy $E = -p_t$ and angular momentum $L = p_\phi$ along the symmetry axis give:
+\begin{align}
+  \frac{dt}{d\lambda} &= g^{tt}p_t + g^{t\phi}p_\phi = -g^{tt}E + g^{t\phi}L,\\
+  \frac{d\phi}{d\lambda} &= g^{t\phi}p_t + g^{\phi\phi}p_\phi = g^{t\phi}E + g^{\phi\phi}L.
+\end{align}
+Carter's constant $\mathcal{Q}$ closes the system \cite{Carter1968}:
+\begin{equation}
+  \mathcal{Q} = p_\theta^2 + \cos^2\theta\left(a^2(m^2 - p_t^2) + \frac{p_\phi^2}{\sin^2\theta}\right),
+\end{equation}
+with $m = 0$ for null rays.
+
+\subsection{Numerical Integration}
+
+The code integrates Eq.~\eqref{eq:geodesic} using a fixed-step RK4 scheme (or adaptive RK5/Cash--Karp), with step size $h = \Delta r / (dr/d\lambda)$. At each step the integrator evaluates the metric and its partial derivatives via analytical formulae in \texttt{src/kerr\_metric.cpp}.
+
+\subsection{Column Density Accumulation}
+
+While tracing, the integrator accumulates the column density through the torus:
+\begin{equation}
+  \Lambda(s) = \int_0^s \rho\!\left(r(\lambda),\,\theta(\lambda)\right) \frac{dl}{d\lambda}\,d\lambda \quad [\mathrm{g/cm}^2],
+  \label{eq:column}
+\end{equation}
+where $dl/d\lambda = \sqrt{g_{ij}(dx^i/d\lambda)(dx^j/d\lambda)}$ is the proper spatial arc element in the rest frame of the torus fluid (approximated here in the coordinate basis).
+
+\subsection{Key Parameters}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Default & Description \\
+\midrule
+$a$ (spin) & 0.8 & Kerr spin, $0 \le a < 1$ \\
+$r_\mathrm{obs}$ & 80\,$r_g$ & Observer radial position \\
+$\theta_\mathrm{obs}$ & 70° & Observer polar angle (inclination) \\
+FOV & 60° & Camera full field of view \\
+$N_x \times N_y$ & 8$\times$8 & Pixel resolution \\
+$r_\mathrm{max}$ & 120\,$r_g$ & Ray integration outer boundary \\
+$h$ & 0.05\,$r_g$ & Integration step size \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Output:} Binary file \texttt{kerr\_geodesics\_e2e.bin} in KGEO format (magic \texttt{0x4B47454F}), containing one \texttt{PathPoint} record per geodesic step: $(r,\theta,\phi,\Lambda,\tau_\mathrm{GBW},\tau_\mathrm{IIM})$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 2: Sampling Interaction Points on Geodesics}
+\label{sec:interaction_points}
+
+\subsection{Physical Role}
+
+The UHE neutrino travels along a null geodesic toward the black hole and has a probability of interacting with the torus material. This step samples $N_\mathrm{events}$ interaction points from the set of traced geodesics, using the accumulated column density and the DIS cross section to compute the interaction probability at each point.
+
+\subsection{Optical Depth and Interaction Probability}
+
+The optical depth to interaction at affine parameter $\lambda$ along a geodesic is:
+\begin{equation}
+  \tau(E_\nu, \lambda) = \sigma_\mathrm{CC}(E_\nu)\,\Lambda(\lambda),
+  \label{eq:tau}
+\end{equation}
+where $\sigma_\mathrm{CC}(E_\nu)$ is the neutrino--nucleon charged-current cross section. The probability that the neutrino first interacts between $\lambda$ and $\lambda + d\lambda$ is:
+\begin{equation}
+  P_\mathrm{int}(\lambda)\,d\lambda = e^{-\tau(\lambda)}\,\sigma_\mathrm{CC}\,\rho(\lambda)\,dl\,d\lambda.
+  \label{eq:pint}
+\end{equation}
+The cumulative interaction probability after traversing the full column $\Lambda$ is:
+\begin{equation}
+  P_\mathrm{total} = 1 - e^{-\sigma_\mathrm{CC}\,\Lambda}.
+\end{equation}
+
+Points are sampled stochastically using a fixed seed for reproducibility; each selected point carries its BL coordinates $(r,\theta,\phi)$, column $\Lambda$, and $\tau$.
+
+\subsection{Torus Density Profile}
+
+The torus density field $\rho(r,\theta)$ driving Eq.~\eqref{eq:column}--\eqref{eq:tau} is implemented in \texttt{src/torus\_profile.cpp}. The default is a Gaussian torus:
+\begin{equation}
+  \rho(r,\theta) = \rho_0 \exp\!\left(-\frac{(r - r_0)^2}{2\sigma_r^2}\right)
+                  \exp\!\left(-\frac{(\theta - \pi/2)^2}{2(H/r)^2}\right),
+  \label{eq:gaussian_torus}
+\end{equation}
+with $r_0$ the torus radius, $\sigma_r$ the radial width, and $H/r$ the aspect ratio. Additional profiles include power-law and collapsar NDAF (neutrino-dominated accretion flow) \cite{Popham1999, DiMatteo2002}.
+
+\textbf{Output:} \texttt{interaction\_points.jsonl} --- each record contains \texttt{event\_id, x\_rg, y\_rg, z\_rg, r\_rg, theta\_rad, phi\_rad, column\_g\_cm2, tau\_gbw, tau\_iim, P\_int\_gbw, P\_int\_iim}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 3: NLO DIS Event Generation (POWHEG + PYTHIA 8)}
+\label{sec:dis}
+
+\subsection{Physical Role}
+
+At each sampled interaction point, a UHE neutrino undergoes charged-current deep inelastic scattering with a nucleon in the torus:
+\begin{equation}
+  \nu_\mu + N \;\longrightarrow\; \mu^- + X,
+  \label{eq:dis}
+\end{equation}
+where $X$ is the hadronic final state. The cross section is calculated at NLO in QCD using POWHEG-DIS \cite{Alioli2010, POWHEG_DIS}, and the parton-level events are then showered and hadronized with PYTHIA~8 \cite{Sjostrand2014}.
+
+\subsection{DIS Kinematics}
+
+Define the standard DIS variables:
+\begin{align}
+  q^\mu &= k^\mu - k'^\mu \quad \text{(4-momentum transfer)},\\
+  Q^2   &= -q^2 > 0 \quad \text{(virtuality)},\\
+  x     &= \frac{Q^2}{2\,P\cdot q} \in (0,1] \quad \text{(Bjorken-}x\text{)},\\
+  y     &= \frac{P\cdot q}{P\cdot k} \quad \text{(inelasticity)},\\
+  W^2   &= (P + q)^2 = M_N^2 + Q^2\frac{1-x}{x} \quad \text{(invariant mass of }X\text{)},
+\end{align}
+where $k, k'$ are the initial and final lepton momenta, $P$ is the nucleon momentum, and $M_N$ is the nucleon mass. The center-of-mass energy squared is:
+\begin{equation}
+  s = 2\,M_N\,E_\nu \quad (M_N \ll E_\nu).
+\end{equation}
+
+\subsection{DIS Cross Sections: GBW and IIM Saturation Models}
+
+At UHE energies, the small-$x$ regime dominates and parton saturation becomes relevant. HADROS-CASCADE employs two saturation models for the neutrino--nucleon cross section.
+
+\subsubsection{Golec-Biernat--W\"{u}sthoff (GBW) Model}
+
+The GBW dipole model \cite{GBW1998, GBW1999} parametrizes the $\gamma^*$--proton cross section via the dipole picture:
+\begin{equation}
+  \sigma_{\gamma^*p}(x, Q^2) = \sigma_0 \left[1 - \exp\!\left(-\frac{Q^2}{4\,Q_s^2(x)}\right)\right],
+  \label{eq:gbw}
+\end{equation}
+where the saturation scale is:
+\begin{equation}
+  Q_s^2(x) = Q_0^2 \left(\frac{x_0}{x}\right)^\lambda.
+\end{equation}
+Fitted parameters: $\sigma_0 = 23.03$ mb, $\lambda = 0.288$, $x_0 = 3.04\times10^{-4}$, $Q_0 = 1$ GeV.
+
+\subsubsection{Iancu--Itakura--McLerran (IIM) Model}
+
+The IIM model \cite{IIM2002} introduces anomalous dimension corrections to the dipole amplitude:
+\begin{equation}
+  \mathcal{N}(r, x) =
+  \begin{cases}
+    \mathcal{N}_0 \left(\frac{r^2\,Q_s^2}{4}\right)^{\gamma_s + \frac{\ln(2/r\,Q_s)}{\kappa\,\lambda\,Y}} & r\,Q_s \le 2 \\
+    1 - e^{-a\ln^2(b\,r\,Q_s)} & r\,Q_s > 2
+  \end{cases}
+  \label{eq:iim}
+\end{equation}
+where $Y = \ln(1/x)$, $\gamma_s = 0.6275$, $\kappa = 9.9$, and $\mathcal{N}_0 = 0.558$.
+
+The total $\nu$--$N$ cross section at NLO is obtained by convolving these dipole cross sections with the CC structure functions and numerically integrating over $x$ and $Q^2$ up to $Q_\mathrm{max}^2 = \min(2\sqrt{M_N E_\nu},\,10^5\,\mathrm{GeV})^2$.
+
+\subsection{POWHEG-DIS Event Generation}
+
+The POWHEG method \cite{Nason2004, Frixione2007} generates events with NLO accuracy and a positive-weight Sudakov form factor. The channel used is charged current (CC, type 3). LHAPDF set \texttt{NNPDF31\_nlo\_as\_0118} (ID 303400) \cite{NNPDF2017} provides the parton distribution functions.
+
+The POWHEG-DIS output is a Les~Houches Event (LHE) file with parton-level 4-momenta. These are passed to PYTHIA~8 via \texttt{Beams:frameType~=~4} (LHE input mode).
+
+\subsection{PYTHIA 8 Hadronization}
+
+PYTHIA~8 \cite{Sjostrand2014} applies:
+\begin{enumerate}
+  \item \textbf{Initial-state radiation (ISR):} backward parton shower from the struck quark.
+  \item \textbf{Final-state radiation (FSR):} forward shower of the outgoing parton cascade.
+  \item \textbf{Hadronization:} Lund string fragmentation model \cite{Andersson1983}, producing a realistic multiparticle hadronic final state.
+  \item \textbf{Unstable hadron decays:} $\pi^0 \to \gamma\gamma$, $K_S^0 \to \pi^+\pi^-$, etc.
+\end{enumerate}
+
+\textbf{Output:} \texttt{hadros\_particle\_events.jsonl} --- one record per final-state particle with fields \texttt{event\_id, pdg, energy\_gev, px\_gev, py\_gev, pz\_gev, mass\_gev, interaction\_type}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 4: Hadronic Cascade in GEANT4}
+\label{sec:geant4}
+
+\subsection{Physical Role}
+
+The particles produced by PYTHIA~8 are injected into a local Cartesian box centered at the interaction point in the torus. GEANT4 \cite{Agostinelli2003, Allison2006} transports each particle, tracking electromagnetic and hadronic secondary production, until particles either escape the box or deposit all their energy.
+
+\subsection{Particle Classification}
+
+Before sending particles to GEANT4, the pipeline classifies each final-state particle from PYTHIA into categories:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Category & Criterion & Fate \\
+\midrule
+\texttt{invisible} & PDG $\in \{12, 14, 16, -12, -14, -16\}$ & Passes through; counted as $E_\mathrm{invisible}$ \\
+\texttt{untracked} & Zero momentum or unknown PDG & Skipped; counted in $E_\mathrm{untracked}$ \\
+\texttt{unsupported\_uhe} & $E_k > E_k^\mathrm{max}$ (per species) & Flagged; counted as $E_\mathrm{unsupported}$ \\
+\texttt{transportable} & Everything else & Transported through GEANT4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \texttt{unsupported\_uhe} category is the most common for UHE primaries: GEANT4 hadronic physics lists (FTFP\_BERT, QGSP\_BERT) have upper energy limits of $\sim10^5$~GeV, above which the nuclear interactions are not modeled. These particles are flagged as \texttt{unsupported\_uhe\_energy} in the energy budget. This is why the GEANT4 step typically returns a \texttt{PARTIAL} status for UHE runs.
+
+\subsection{ZAMO Local Tetrad Frame}
+
+The local GEANT4 box is defined in the Locally Non-Rotating Frame (LNRF), also called the Zero-Angular-Momentum Observer (ZAMO) frame \cite{Bardeen1972}. The orthonormal basis vectors at position $(r_\mathrm{int}, \theta_\mathrm{int}, \phi_\mathrm{int})$ are:
+\begin{equation}
+  \hat{e}_{\hat{r}} = \frac{1}{\sqrt{g_{rr}}}\,\partial_r, \qquad
+  \hat{e}_{\hat{\theta}} = \frac{1}{\sqrt{g_{\theta\theta}}}\,\partial_\theta, \qquad
+  \hat{e}_{\hat{\phi}} = \frac{1}{\sqrt{g_{\phi\phi}}}\,\partial_\phi,
+  \label{eq:tetrad}
+\end{equation}
+with the Kerr metric components evaluated at the interaction point:
+\begin{equation}
+  \sqrt{g_{rr}} = \sqrt{\Sigma/\Delta}, \qquad
+  \sqrt{g_{\theta\theta}} = \sqrt{\Sigma}, \qquad
+  \sqrt{g_{\phi\phi}} = \sqrt{A}\sin\theta/\sqrt{\Sigma}.
+\end{equation}
+
+Momenta of PYTHIA particles are rotated into this local frame before being passed to GEANT4. After the cascade, escaped particles are transformed back to BL coordinates using the inverse tetrad.
+
+\subsection{Energy Conservation}
+
+The energy budget at the interaction point is:
+\begin{equation}
+  E_\mathrm{in} = E_\mathrm{dep} + E_\mathrm{esc} + E_\mathrm{invisible} + E_\mathrm{unsupported} + E_\mathrm{untracked} + E_\mathrm{failed} + E_\mathrm{residual},
+  \label{eq:energy_budget}
+\end{equation}
+where:
+\begin{itemize}
+  \item $E_\mathrm{dep}$: energy deposited in the box (heating torus material),
+  \item $E_\mathrm{esc}$: energy carried by escaped particles (observable),
+  \item $E_\mathrm{invisible}$: neutrinos passing through (from DIS final state),
+  \item $E_\mathrm{unsupported}$: UHE particles above GEANT4 energy limit,
+  \item $E_\mathrm{untracked}$: particles with unknown or zero momentum,
+  \item $E_\mathrm{failed}$: GEANT4 jobs that errored,
+  \item $E_\mathrm{residual}$: floating-point closure error.
+\end{itemize}
+
+The run achieves \texttt{VALIDATED} status if $|E_\mathrm{residual}| < 1$~GeV and all jobs complete; otherwise it is \texttt{PARTIAL} (warning, not error).
+
+\subsection{Physics Lists}
+
+GEANT4 is configured with either:
+\begin{itemize}
+  \item \textbf{FTFP\_BERT:} Fritiof Precompound model + Bertini cascade. Standard for $E_k \gtrsim 5$~GeV.
+  \item \textbf{QGSP\_BERT:} Quark--Gluon String Precompound + Bertini below 12~GeV.
+\end{itemize}
+
+\textbf{Output:} \texttt{geant4\_ready\_particles.jsonl} --- each escaped particle record contains \texttt{pdg, energy\_gev, global\_exit\_x\_rg, global\_exit\_y\_rg, global\_exit\_z\_rg}, plus the BL position and 4-momentum in the Kerr frame.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 5: Particle-Ray Association Camera}
+\label{sec:camera}
+
+\subsection{Physical Role}
+
+Each particle that escapes the GEANT4 box now has a global position in Kerr spacetime. The particle-ray association camera records which sampled Kerr ray is spatially close to that particle and, in the angular mode, locally aligned with its momentum. This is a cascade-origin / particle-ray association map, not a detector image and not full transport of secondary particles to the observer.
+
+\subsection{Backward Ray Tracing}
+
+For each pixel $(i,j)$, a null geodesic $\gamma_{ij}(\lambda)$ is integrated backward from the observer. The particle at position $\mathbf{x}_p = (r_p, \theta_p, \phi_p)$ is associated with pixel $(i,j)$ if:
+\begin{equation}
+  \min_\lambda \left[ d_\mathrm{spatial}(\gamma_{ij}(\lambda),\,\mathbf{x}_p) \right] < \epsilon_s
+  \quad \text{and} \quad
+  d_\mathrm{angular}(\hat{n}_{ij},\,\hat{n}_p) < \epsilon_a,
+  \label{eq:matching}
+\end{equation}
+where $\epsilon_s$ and $\epsilon_a$ are spatial and angular matching tolerances (configured in \texttt{config\_web\_final.py}), and $\hat{n}_p$ is the local particle momentum direction at the association point. In \texttt{spatial\_only} mode only the spatial criterion is applied and the direction misalignment is recorded as not calculated.
+
+The associated energy in pixel $(i,j)$ is redshift-adjusted for the sampled Kerr ray:
+\begin{equation}
+  E_\mathrm{obs} = E_p \cdot \frac{(p_\mu u^\mu)_\mathrm{source}}{(p_\mu u^\mu)_\mathrm{observer}},
+  \label{eq:redshift}
+\end{equation}
+where $u^\mu$ is the 4-velocity of the emitter (ZAMO frame) and observer (static at $r_\mathrm{obs}$).
+
+\textbf{Output:} \texttt{particle\_ray\_association\_camera.csv}. Legacy \texttt{observed\_particles\_by\_pixel.*} files may also be written for compatibility; the legacy name does not imply a physical observation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 6: Ray--Event Linking}
+\label{sec:ray_link}
+
+\subsection{Physical Role}
+
+After the association step, each ray-associated secondary particle can be linked to the specific Kerr geodesic sample through which the incident neutrino traveled. This ``ray link'' allows propagating the incoming column density $\Lambda_\mathrm{in}$ from the pre-computed geodesic cache to every downstream record.
+
+\subsection{Modular Assignment}
+
+The pipeline generates $N_\mathrm{POWHEG}$ events (typically 16) but may have only $N_\mathrm{int}$ sampled interaction points (e.g.\ 10). Event IDs are assigned modularly:
+\begin{equation}
+  \text{link}(e) =
+  \begin{cases}
+    \text{links}[e] & \text{if } e \in \text{links} \\
+    \text{links}[\text{sorted\_keys}[(e-1)\,\mathrm{mod}\,|\text{links}|]] & \text{otherwise}
+  \end{cases}
+  \label{eq:modular}
+\end{equation}
+
+This ensures every POWHEG event gets a valid geodesic, even when the number of events exceeds the number of sampled interaction points.
+
+\textbf{Output:} Updated JSONL files with \texttt{incoming\_ray\_id}, \texttt{column\_before\_g\_cm2}, \texttt{tau\_before\_gbw}, \texttt{tau\_before\_iim} fields added to each record.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 7: GBW/IIM Interaction Probability Weighting}
+\label{sec:weighting}
+
+\subsection{Physical Role}
+
+Not all geodesics have the same probability of producing a DIS interaction. This step reweights each ray-associated secondary-particle row by the interaction probability derived from the real incoming geodesic column density:
+\begin{equation}
+  w_\mathrm{GBW}(e) = P_\mathrm{int}^\mathrm{GBW}(e) = 1 - \exp\!\left(-\sigma_\mathrm{GBW}(E_\nu)\,\Lambda_\mathrm{in}(e)\right),
+  \label{eq:weight_gbw}
+\end{equation}
+\begin{equation}
+  w_\mathrm{IIM}(e) = P_\mathrm{int}^\mathrm{IIM}(e) = 1 - \exp\!\left(-\sigma_\mathrm{IIM}(E_\nu)\,\Lambda_\mathrm{in}(e)\right).
+  \label{eq:weight_iim}
+\end{equation}
+
+Cross sections $\sigma_\mathrm{GBW}(E_\nu)$ and $\sigma_\mathrm{IIM}(E_\nu)$ are read from precomputed tables in \texttt{sigma\_table\_path}. The weighted image is:
+\begin{equation}
+  \mathcal{I}_{ij} = \sum_{e: (i_e, j_e) = (i,j)} E_\mathrm{obs}(e)\,w(e),
+  \label{eq:image}
+\end{equation}
+which represents a weighted cascade-origin / particle-ray association map. It is not a detector flux image and does not transport secondary particles to the observer.
+
+\textbf{Output:} \texttt{gbw\_iim\_camera\_summary.csv} with per-event weights and \texttt{weighted\_energy\_gev} column.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Step 8: Scientific Figures and Dashboard}
+\label{sec:output}
+
+\subsection{Generated Products}
+
+The final steps produce:
+
+\begin{enumerate}
+  \item \textbf{Particle-ray association RGB map} (\texttt{particle\_ray\_association\_rgb.png}): false-color association map with gamma (red), electromagnetic (green), hadronic (blue) channels.
+  \item \textbf{Per-channel energy maps}: separate images for $\gamma$, $e^\pm$, hadrons, $\nu$.
+  \item \textbf{Energy budget chart}: pie/bar plot showing $E_\mathrm{dep}$, $E_\mathrm{esc}$, $E_\mathrm{invisible}$, etc.
+  \item \textbf{GBW vs.\ IIM sensitivity}: side-by-side comparison of the two saturation models.
+  \item \textbf{Camera sensitivity scan}: varied $a$, $\theta_\mathrm{obs}$, $r_\mathrm{obs}$, FOV, step size.
+  \item \textbf{Interactive dashboard} (\texttt{dashboard/index.html}): HTML page aggregating all run products with clickable plots.
+\end{enumerate}
+
+\subsection{Geodesic Camera Preview}
+
+A separate, non-science tool (\texttt{hadros\_geodesic\_preview}) renders a low-resolution Kerr geodesic image using only the geometric optics (no DIS, no cascade). It supports interactive navigation via GLFW/OpenGL and saves camera configurations to \texttt{configs/cameras/last\_camera.json}. Supported display modes: \texttt{celestial\_sphere}, \texttt{disk\_intersection}, \texttt{shadow\_only}, \texttt{combined}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Data Flow Summary}
+\label{sec:dataflow}
+
+\begin{longtable}{p{2.2cm}p{3.5cm}p{3.5cm}p{4cm}}
+\toprule
+\textbf{Step} & \textbf{Input} & \textbf{Output} & \textbf{Format} \\
+\midrule
+\endhead
+1 Kerr Geodesics & Metric params, camera config & \texttt{kerr\_geodesics\_e2e.bin} & Binary KGEO (PathPoint stream) \\
+\midrule
+2 Interaction Points & KGEO binary & \texttt{interaction\_points.jsonl} & JSONL \\
+\midrule
+3 POWHEG+PYTHIA & \texttt{interaction\_points.jsonl} + POWHEG binary & \texttt{hadros\_particle\_events.jsonl} & JSONL + CSV \\
+\midrule
+4 GEANT4 Cascade & \texttt{hadros\_particle\_events.jsonl} & \texttt{geant4\_ready\_particles.jsonl} & JSONL (with global positions) \\
+\midrule
+5 Backward Camera & \texttt{geant4\_ready\_particles.jsonl} & \texttt{observed\_particles\_by\_pixel.csv} & CSV \\
+\midrule
+6 Ray--Event Link & All above + KGEO & Updated JSONL files with \texttt{incoming\_ray\_id} & JSONL \\
+\midrule
+7 GBW/IIM Weight & Linked JSONL + $\sigma$ tables & \texttt{gbw\_iim\_camera\_summary.csv} & CSV \\
+\midrule
+8 Figures & All CSVs/JSONLs & PNG images + HTML dashboard & PNG, HTML \\
+\bottomrule
+\caption{HADROS-CASCADE pipeline data flow.}
+\label{tab:dataflow}
+\end{longtable}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Configuration and Execution}
+\label{sec:config}
+
+\subsection{Configuration File}
+
+The pipeline is controlled by a single JSON file (default: \texttt{presets/config\_web/final\_config.json}). Key sections:
+
+\begin{lstlisting}[language={}]
+{
+  "run":              { "run_name", "output_dir", "physics_mode" },
+  "black_hole_camera":{ "spin", "black_hole_mass_msun",
+                        "observer_inclination_deg", "field_of_view_deg",
+                        "resolution", "observer_radius_rg",
+                        "ray_max_radius_rg", "ray_step" },
+  "uhe_dis":          { "source_model", "energy_gev", "dis_model",
+                        "spectral_bins", "sigma_table",
+                        "powheg_executable", "pythia8_config",
+                        "n_events", "seed" },
+  "torus":            { "rho0", "r0_rg", "sigma_rg", "h_over_r",
+                        "density_profile" },
+  "outputs":          { "science_plots", "dashboard",
+                        "validation_plots", "diagnostic_plots" }
+}
+\end{lstlisting}
+
+\subsection{Key Make Targets}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Target & Action \\
+\midrule
+\texttt{make build} & Compile all C++ binaries \\
+\texttt{make kerr-geodesics} & Run Step~1 \\
+\texttt{make final-config-web} & Start configuration web UI \\
+\texttt{make final-pipeline-dry-run} & Print planned steps \\
+\texttt{make final-pipeline-run} & Execute full pipeline \\
+\texttt{make geodesic\_preview} & Launch real Kerr geodesic preview \\
+\texttt{make cascade\_geant4\_local\_box} & Compile GEANT4 binary \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Resumability}
+
+Each GEANT4 job (one particle per job) is independently resumable. If a job fails or the run is interrupted, completed jobs are read from the \texttt{jobs/} directory and skipped on the next run, so only failed or missing jobs are re-executed. This is controlled by \texttt{run\_powheg\_pythia\_geant4\_resumable.py}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Exit Codes and Status Flags}
+\label{sec:status}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Exit Code & Status String & Meaning \\
+\midrule
+0 & \texttt{VALIDATED} & All criteria met; physics reliable \\
+2 & \texttt{PARTIAL} & Outputs present but $<$ validation threshold; \\
+  &                   & typical for UHE runs dominated by \texttt{unsupported\_uhe} \\
+$\neq 0,2$ & \texttt{FAILED} & Hard error; pipeline stops \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \texttt{[warn] geant4\_real\_safe\_zamo: partial return code 2 with required outputs present} message means the GEANT4 step exited with code 2 (\texttt{PARTIAL}), but all required output files exist and the pipeline continues. This is the expected behavior for UHE neutrino energies ($E_\nu \gtrsim 10^5$~GeV) where most DIS secondary particles exceed the GEANT4 hadronic physics range.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Abbreviations}
+
+\begin{tabular}{ll}
+BL & Boyer--Lindquist \\
+CC & Charged Current \\
+DIS & Deep Inelastic Scattering \\
+FOV & Field of View \\
+GBW & Golec-Biernat--W\"{u}sthoff \\
+GEANT4 & Geometry And Tracking (CERN simulation toolkit) \\
+IIM & Iancu--Itakura--McLerran \\
+JSONL & JSON Lines (one JSON object per line) \\
+LHE & Les Houches Event format \\
+LNRF & Locally Non-Rotating Frame \\
+NLO & Next-to-Leading Order \\
+POWHEG & Positive-Weight Hardest Emission Generator \\
+PYTHIA & Parton-level event generator \\
+QCD & Quantum Chromodynamics \\
+RK4/RK5 & Runge--Kutta 4th/5th order \\
+UHE & Ultra-High-Energy \\
+ZAMO & Zero-Angular-Momentum Observer \\
+\end{tabular}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{99}
+
+\bibitem{Kerr1963}
+R.~P.~Kerr, \textit{Gravitational Field of a Spinning Mass as an Example of Algebraically Special Metrics}, Phys.\ Rev.\ Lett.\ \textbf{11}, 237 (1963).
+
+\bibitem{Misner1973}
+C.~W.~Misner, K.~S.~Thorne, J.~A.~Wheeler, \textit{Gravitation}, W.H.~Freeman, San Francisco (1973).
+
+\bibitem{MTW}
+C.~W.~Misner, K.~S.~Thorne, J.~A.~Wheeler, \textit{Gravitation}, W.H.~Freeman, San Francisco (1973).
+
+\bibitem{Carter1968}
+B.~Carter, \textit{Global Structure of the Kerr Family of Gravitational Fields}, Phys.\ Rev.\ \textbf{174}, 1559 (1968).
+
+\bibitem{Bardeen1972}
+J.~M.~Bardeen, W.~H.~Press, S.~A.~Teukolsky, \textit{Rotating Black Holes: Locally Nonrotating Frames, Energy Extraction, and Scalar Synchrotron Radiation}, Astrophys.\ J.\ \textbf{178}, 347 (1972).
+
+\bibitem{Fuerst2004}
+S.~V.~Fuerst, K.~Wu, \textit{Radiation transfer of emission lines in curved spacetime}, Astron.\ Astrophys.\ \textbf{424}, 733 (2004).
+
+\bibitem{GBW1998}
+K.~Golec-Biernat, M.~W\"{u}sthoff, \textit{Saturation effects in deep inelastic scattering at low $x$ and its implications on diffraction}, Phys.\ Rev.\ D \textbf{59}, 014017 (1998). [arXiv:hep-ph/9807401]
+
+\bibitem{GBW1999}
+K.~Golec-Biernat, M.~W\"{u}sthoff, \textit{Saturation in diffractive deep inelastic scattering}, Phys.\ Rev.\ D \textbf{60}, 114023 (1999). [arXiv:hep-ph/9903358]
+
+\bibitem{IIM2002}
+E.~Iancu, K.~Itakura, S.~McLerran, \textit{Geometric scaling above the saturation scale}, Nucl.\ Phys.\ A \textbf{708}, 327 (2002). [arXiv:hep-ph/0203137]
+
+\bibitem{Alioli2010}
+S.~Alioli, P.~Nason, C.~Oleari, E.~Re, \textit{A general framework for implementing NLO calculations in shower Monte Carlo programs: the POWHEG BOX}, JHEP \textbf{06}, 043 (2010). [arXiv:1002.2581]
+
+\bibitem{POWHEG_DIS}
+S.~Alioli, P.~Nason, C.~Oleari, E.~Re, \textit{NLO vector-boson production matched with shower in POWHEG}, JHEP \textbf{07}, 060 (2008); see also POWHEG-DIS implementation for $\nu N$ scattering.
+
+\bibitem{Nason2004}
+P.~Nason, \textit{A new method for combining NLO QCD with shower Monte Carlo algorithms}, JHEP \textbf{11}, 040 (2004). [arXiv:hep-ph/0409146]
+
+\bibitem{Frixione2007}
+S.~Frixione, P.~Nason, C.~Oleari, \textit{Matching NLO QCD computations with Parton Shower simulations: the POWHEG method}, JHEP \textbf{11}, 070 (2007). [arXiv:0709.2092]
+
+\bibitem{Sjostrand2014}
+T.~Sj\"{o}strand et al., \textit{An Introduction to PYTHIA~8.2}, Comput.\ Phys.\ Commun.\ \textbf{191}, 159 (2015). [arXiv:1410.3012]
+
+\bibitem{Andersson1983}
+B.~Andersson, G.~Gustafson, G.~Ingelman, T.~Sj\"{o}strand, \textit{Parton Fragmentation and String Dynamics}, Phys.\ Rept.\ \textbf{97}, 31 (1983).
+
+\bibitem{NNPDF2017}
+NNPDF Collaboration, \textit{Parton distributions from high-precision collider data}, Eur.\ Phys.\ J.\ C \textbf{77}, 663 (2017). [arXiv:1706.00428]
+
+\bibitem{Agostinelli2003}
+S.~Agostinelli et al.\ (GEANT4 Collaboration), \textit{GEANT4 — a simulation toolkit}, Nucl.\ Instrum.\ Meth.\ A \textbf{506}, 250 (2003).
+
+\bibitem{Allison2006}
+J.~Allison et al., \textit{GEANT4 Developments and Applications}, IEEE Trans.\ Nucl.\ Sci.\ \textbf{53}, 270 (2006).
+
+\bibitem{Popham1999}
+R.~Popham, S.~E.~Woosley, C.~Fryer, \textit{Hyperaccreting Black Holes and Gamma-Ray Bursts}, Astrophys.\ J.\ \textbf{518}, 356 (1999). [arXiv:astro-ph/9807028]
+
+\bibitem{DiMatteo2002}
+T.~Di~Matteo, R.~Perna, R.~Narayan, \textit{Neutrino Trapping and Emission in Neutrino-dominated Accretion Flows}, Astrophys.\ J.\ \textbf{579}, 706 (2002). [arXiv:astro-ph/0207319]
+
+\end{thebibliography}
+
+\end{document}
