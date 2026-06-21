@@ -132,9 +132,9 @@ def schema() -> list[dict[str, Any]]:
                     "Photon observer mode",
                     "escape_classifier",
                     kind="select",
-                    options=["escape_classifier"],
+                    options=["escape_classifier", "observer_sphere_hits"],
                     visibility="EXPERT",
-                    description="Phase 1 only: classify escaped GEANT4 photons as captured, reaching the observer sphere, missing, or failed.",
+                    description="escape_classifier runs Phase 1 only. observer_sphere_hits runs Phase 1 plus Phase 2 observer-sphere crossing records. Neither mode creates pixels, detector products, images, or observed-energy redshift.",
                 ),
                 field(
                     "photon_escape_classifier",

@@ -97,8 +97,8 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             values[key] = config[key]
         else:
             raise ValueError(f"Missing required photon_escape_classifier parameter: {key}")
-    if str(values["photon_observer_mode"]) != "escape_classifier":
-        raise ValueError("Only photon_observer_mode='escape_classifier' is implemented in Phase 1")
+    if str(values["photon_observer_mode"]) not in {"escape_classifier", "observer_sphere_hits"}:
+        raise ValueError("Unsupported photon_observer_mode; expected 'escape_classifier' or 'observer_sphere_hits'")
     if str(values["photon_observer_frame"]) != "ZAMO":
         raise ValueError("Only photon_observer_frame='ZAMO' is implemented in Phase 1")
     if str(values["photon_redshift_mode"]) != "disabled_until_validated":
@@ -255,6 +255,18 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_camera_is_full_observational_transport": False,
         "photon_projected_to_pixels": False,
         "photon_observer_sphere_crossing_is_detection": False,
+        "photon_observer_sphere_hit_map_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and str(photon["photon_observer_mode"]) == "observer_sphere_hits"
+        ),
+        "photon_observer_sphere_phase": (
+            "photon_observer_sphere_hit_map"
+            if str(photon["photon_observer_mode"]) == "observer_sphere_hits"
+            else "not_run"
+        ),
+        "photon_observer_sphere_projected_to_pixels": False,
+        "photon_observer_sphere_hits_camera_aperture": False,
+        "photon_observer_sphere_observed_energy_available": False,
     })
     path = output_dir / "final_pipeline_science_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,6 +547,31 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                 ],
             )
         )
+        if str(photon["photon_observer_mode"]) == "observer_sphere_hits":
+            steps.append(
+                FinalStep(
+                    "photon_observer_sphere_hit_map",
+                    [
+                        sys.executable,
+                        "scripts/science/build_photon_observer_sphere_hits.py",
+                        "--input",
+                        str(cascade / "photon_escape_classifier.jsonl"),
+                        "--output-jsonl",
+                        str(cascade / "photon_observer_sphere_hits.jsonl"),
+                        "--summary-csv",
+                        str(cascade / "photon_observer_sphere_summary.csv"),
+                        "--summary-md",
+                        str(cascade / "photon_observer_sphere_summary.md"),
+                        "--provenance",
+                        str(cascade / "photon_observer_sphere_provenance.json"),
+                    ],
+                    [
+                        cascade / "photon_observer_sphere_hits.jsonl",
+                        cascade / "photon_observer_sphere_summary.csv",
+                        cascade / "photon_observer_sphere_provenance.json",
+                    ],
+                )
+            )
     if mode == "uhe_cascade":
         return steps
     if association_mode == "full_transport":
