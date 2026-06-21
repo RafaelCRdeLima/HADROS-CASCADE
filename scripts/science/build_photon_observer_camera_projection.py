@@ -41,6 +41,13 @@ CAMERA_FIELDS = [
     "p_theta_crossing",
     "p_phi_crossing",
     "crossing_momentum_available",
+    "E_killing_initial",
+    "E_killing_final",
+    "Lz_initial",
+    "Lz_final",
+    "null_norm_max_abs_error",
+    "relative_E_error",
+    "relative_Lz_error",
     "projection_mode",
 ]
 
@@ -222,6 +229,13 @@ def project_hit(
         "p_theta_crossing": require_float(row, "p_theta_crossing"),
         "p_phi_crossing": require_float(row, "p_phi_crossing"),
         "crossing_momentum_available": bool(row.get("crossing_momentum_available")),
+        "E_killing_initial": require_float(row, "E_killing_initial"),
+        "E_killing_final": require_float(row, "E_killing_final"),
+        "Lz_initial": require_float(row, "Lz_initial"),
+        "Lz_final": require_float(row, "Lz_final"),
+        "null_norm_max_abs_error": require_float(row, "null_norm_max_abs_error"),
+        "relative_E_error": require_float(row, "relative_E_error"),
+        "relative_Lz_error": require_float(row, "relative_Lz_error"),
         "projection_mode": projection_mode,
     }
 

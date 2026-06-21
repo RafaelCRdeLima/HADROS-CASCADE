@@ -29,6 +29,7 @@ def load_module(name: str, rel: str):
 final_pipeline = load_module("run_hadros_final_pipeline_photon_escape", "scripts/run_hadros_final_pipeline.py")
 phase2_hits = load_module("build_photon_observer_sphere_hits", "scripts/science/build_photon_observer_sphere_hits.py")
 phase3_projection = load_module("build_photon_observer_camera_projection", "scripts/science/build_photon_observer_camera_projection.py")
+phase4_redshift = load_module("build_photon_observer_camera_redshift", "scripts/science/build_photon_observer_camera_redshift.py")
 
 
 P_MU_FIELDS = [
@@ -262,6 +263,10 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_min_energy_gev",
         "photon_camera_output_mode",
         "photon_redshift_mode",
+        "photon_redshift_emitter_frame",
+        "photon_redshift_observer_frame",
+        "photon_redshift_energy_tolerance",
+        "photon_redshift_fail_on_invalid",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -306,7 +311,11 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_geodesic_step_rg": 0.03,
         "photon_min_energy_gev": 2.0,
         "photon_camera_output_mode": "summary_only",
-        "photon_redshift_mode": "disabled_until_validated",
+        "photon_redshift_mode": "disabled",
+        "photon_redshift_emitter_frame": "ZAMO",
+        "photon_redshift_observer_frame": "ZAMO",
+        "photon_redshift_energy_tolerance": 1.0e-6,
+        "photon_redshift_fail_on_invalid": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -367,7 +376,11 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_geodesic_step_rg": 0.03,
         "photon_min_energy_gev": 2.0,
         "photon_camera_output_mode": "summary_only",
-        "photon_redshift_mode": "disabled_until_validated",
+        "photon_redshift_mode": "disabled",
+        "photon_redshift_emitter_frame": "ZAMO",
+        "photon_redshift_observer_frame": "ZAMO",
+        "photon_redshift_energy_tolerance": 1.0e-6,
+        "photon_redshift_fail_on_invalid": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -430,7 +443,11 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "photon_geodesic_step_rg": 0.03,
         "photon_min_energy_gev": 2.0,
         "photon_camera_output_mode": "summary_only",
-        "photon_redshift_mode": "disabled_until_validated",
+        "photon_redshift_mode": "disabled",
+        "photon_redshift_emitter_frame": "ZAMO",
+        "photon_redshift_observer_frame": "ZAMO",
+        "photon_redshift_energy_tolerance": 1.0e-6,
+        "photon_redshift_fail_on_invalid": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -449,6 +466,8 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
     for name in expected_order:
         if name not in names:
             raise AssertionError(f"pipeline did not include {name}: {names}")
+    if "photon_observer_camera_redshift" in names:
+        raise AssertionError(f"disabled redshift mode should not schedule Phase 4: {names}")
     if [names.index(name) for name in expected_order] != sorted(names.index(name) for name in expected_order):
         raise AssertionError(f"Phase 3 was not scheduled after Phase 1 and Phase 2: {names}")
     phase3 = next(step for step in steps if step.name == "photon_observer_camera_projection")
@@ -472,6 +491,77 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         raise AssertionError(f"pipeline provenance missing Phase 3 enabled flag: {provenance}")
     if provenance.get("photon_observer_camera_aperture_acceptance_applied") is not False:
         raise AssertionError(f"pipeline provenance must record no aperture acceptance: {provenance}")
+
+
+def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
+    config = {
+        "run_name": "PhotonCameraRedshiftPipeline",
+        "output_dir": str(tmp / "run"),
+        "physics_mode": "uhe_cascade",
+        "black_hole_mass_msun": 3.0,
+        "spin": 0.0,
+        "camera_nx": 7,
+        "camera_ny": 5,
+        "camera_fov_deg": 60.0,
+        "camera_theta_deg": 70.0,
+        "camera_r_obs_rg": 20.0,
+        "camera_r_max_rg": 40.0,
+        "camera_step": 0.05,
+        "neutrino_energy_gev": 1.0e9,
+        "n_events": 1,
+        "seed": 1,
+        "generate_standard_scientific_plots": False,
+        "generate_dashboard": False,
+        "enable_photon_observer_camera": True,
+        "photon_observer_mode": "observer_camera_projection",
+        "photon_observer_frame": "ZAMO",
+        "photon_null_norm_tolerance": 1.0e-8,
+        "photon_invariant_tolerance": 1.0e-6,
+        "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_fail_on_invariant_violation": True,
+        "photon_max_geodesic_steps": 1234,
+        "photon_geodesic_step_rg": 0.03,
+        "photon_min_energy_gev": 2.0,
+        "photon_camera_output_mode": "summary_only",
+        "photon_redshift_mode": "validated_zamo",
+        "photon_redshift_emitter_frame": "ZAMO",
+        "photon_redshift_observer_frame": "ZAMO",
+        "photon_redshift_energy_tolerance": 1.0e-6,
+        "photon_redshift_fail_on_invalid": False,
+        "photon_camera_projection_mode": "gnomonic_pinhole",
+        "photon_camera_fov_deg": 60.0,
+        "photon_camera_fov_definition": "square_half_angle",
+        "photon_camera_resolution_mode": "reuse_main_camera",
+        "photon_camera_center_theta_source": "observer_inclination_deg",
+        "photon_camera_center_phi_rad": 0.25,
+        "photon_camera_clipping_mode": "keep_outside_fov",
+    }
+    steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
+    names = [step.name for step in steps]
+    expected_order = [
+        "photon_escape_classifier",
+        "photon_observer_sphere_hit_map",
+        "photon_observer_camera_projection",
+        "photon_observer_camera_redshift",
+    ]
+    for name in expected_order:
+        if name not in names:
+            raise AssertionError(f"pipeline did not include {name}: {names}")
+    if [names.index(name) for name in expected_order] != sorted(names.index(name) for name in expected_order):
+        raise AssertionError(f"Phase 4 was not scheduled after Phase 3: {names}")
+    phase4 = next(step for step in steps if step.name == "photon_observer_camera_redshift")
+    command_text = " ".join(phase4.command)
+    for expected in [
+        "photon_observer_camera.csv",
+        "photon_observer_camera_redshift.csv",
+        "photon_observer_camera_redshift_summary.csv",
+        "photon_observer_camera_redshift_provenance.json",
+        "--photon-redshift-mode validated_zamo",
+        "--photon-redshift-emitter-frame ZAMO",
+        "--photon-redshift-observer-frame ZAMO",
+    ]:
+        if expected not in command_text:
+            raise AssertionError(f"Phase 4 command missing {expected}: {phase4.command}")
 
 
 def test_wrapper_has_no_physical_defaults() -> None:
@@ -508,6 +598,10 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'config.get("photon_min_energy_gev"',
         'config.get("photon_camera_output_mode"',
         'config.get("photon_redshift_mode"',
+        'config.get("photon_redshift_emitter_frame"',
+        'config.get("photon_redshift_observer_frame"',
+        'config.get("photon_redshift_energy_tolerance"',
+        'config.get("photon_redshift_fail_on_invalid"',
         'config.get("photon_camera_projection_mode"',
         'config.get("photon_camera_fov_deg"',
         'config.get("photon_camera_fov_definition"',
@@ -526,6 +620,10 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'photon.get("photon_min_energy_gev"',
         'photon.get("photon_camera_output_mode"',
         'photon.get("photon_redshift_mode"',
+        'photon.get("photon_redshift_emitter_frame"',
+        'photon.get("photon_redshift_observer_frame"',
+        'photon.get("photon_redshift_energy_tolerance"',
+        'photon.get("photon_redshift_fail_on_invalid"',
         'photon.get("photon_camera_projection_mode"',
         'photon.get("photon_camera_fov_deg"',
         'photon.get("photon_camera_fov_definition"',
@@ -929,6 +1027,208 @@ def test_phase3_provenance_records_projection_contract(tmp: Path) -> None:
             raise AssertionError(f"Phase 3 provenance[{key!r}]={prov.get(key)!r}, expected {value!r}")
 
 
+def camera_row_for_redshift(**updates: object) -> dict[str, object]:
+    initial_r = float(updates.get("initial_r_rg", 100.0))
+    crossing_r = float(updates.get("observer_crossing_r_rg", 200.0))
+    theta = float(updates.get("initial_theta_rad", 1.2))
+    input_energy = float(updates.get("input_energy_gev", 10.0))
+    alpha_initial = math.sqrt(1.0 - 2.0 / initial_r)
+    p_t = -input_energy * alpha_initial
+    row = phase1_hit_row(
+        initial_r_rg=initial_r,
+        initial_theta_rad=theta,
+        initial_phi_rad=0.4,
+        observer_crossing_r_rg=crossing_r,
+        observer_crossing_theta_rad=theta,
+        observer_crossing_phi_rad=0.4,
+        p_t_initial=p_t,
+        p_r_initial=0.0,
+        p_theta_initial=0.0,
+        p_phi_initial=0.0,
+        p_t_crossing=p_t,
+        p_r_crossing=0.0,
+        p_theta_crossing=0.0,
+        p_phi_crossing=0.0,
+        input_energy_gev=input_energy,
+        relative_E_error=1.0e-12,
+        relative_Lz_error=1.0e-12,
+        null_norm_max_abs_error=1.0e-12,
+    )
+    row.pop("classification", None)
+    row.update(
+        {
+            "pixel_x": 2,
+            "pixel_y": 2,
+            "camera_x": 0.0,
+            "camera_y": 0.0,
+            "inside_fov": True,
+            "projection_status": "inside_fov",
+            "projection_mode": "gnomonic_pinhole",
+        }
+    )
+    row.update(updates)
+    return row
+
+
+def run_phase4_redshift(
+    tmp: Path,
+    rows: list[dict[str, object]],
+    *,
+    mode: str = "validated_zamo",
+    fail_on_invalid: bool = False,
+    energy_tolerance: float = 1.0e-6,
+    invariant_tolerance: float = 1.0e-6,
+) -> tuple[list[dict[str, str]], dict[str, str], dict[str, object], str]:
+    tmp.mkdir(parents=True, exist_ok=True)
+    input_csv = tmp / "photon_observer_camera.csv"
+    output_csv = tmp / "photon_observer_camera_redshift.csv"
+    summary_csv = tmp / "photon_observer_camera_redshift_summary.csv"
+    provenance = tmp / "photon_observer_camera_redshift_provenance.json"
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with input_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+    args = type("Args", (), {})()
+    args.input = input_csv
+    args.output_csv = output_csv
+    args.summary_csv = summary_csv
+    args.provenance = provenance
+    args.spin = 0.0
+    args.photon_redshift_mode = mode
+    args.photon_redshift_emitter_frame = "ZAMO"
+    args.photon_redshift_observer_frame = "ZAMO"
+    args.photon_redshift_energy_tolerance = energy_tolerance
+    args.photon_redshift_fail_on_invalid = "true" if fail_on_invalid else "false"
+    args.photon_invariant_tolerance = invariant_tolerance
+    phase4_redshift.validate_config(args)
+    input_fields, input_rows = phase4_redshift.read_camera_csv(args.input)
+    processed = phase4_redshift.process_rows(input_rows, args)
+    summary = phase4_redshift.build_summary(processed, args.photon_redshift_mode)
+    phase4_redshift.write_rows(output_csv, phase4_redshift.output_fieldnames(input_fields, args.photon_redshift_mode), processed)
+    phase4_redshift.write_summary_csv(summary_csv, summary)
+    phase4_redshift.write_provenance(provenance, args, summary)
+    with output_csv.open("r", encoding="utf-8", newline="") as handle:
+        out_rows = list(csv.DictReader(handle))
+    with summary_csv.open("r", encoding="utf-8", newline="") as handle:
+        summary_row = next(csv.DictReader(handle))
+    prov = json.loads(provenance.read_text(encoding="utf-8"))
+    return out_rows, summary_row, prov, output_csv.read_text(encoding="utf-8")
+
+
+def test_phase4_disabled_does_not_create_observed_energy(tmp: Path) -> None:
+    rows, _, prov, csv_text = run_phase4_redshift(tmp, [camera_row_for_redshift()], mode="disabled")
+    if "observed_energy_gev" in csv_text or "redshift_factor" in csv_text:
+        raise AssertionError(f"disabled redshift mode created observed-energy fields: {csv_text}")
+    if "observed_energy_gev" in rows[0]:
+        raise AssertionError(f"disabled redshift row contains observed energy: {rows[0]}")
+    if prov.get("observed_energy_available") is not False:
+        raise AssertionError(f"disabled redshift provenance claims observed energy: {prov}")
+
+
+def test_phase4_validated_zamo_produces_finite_observed_energy(tmp: Path) -> None:
+    rows, summary, prov, _ = run_phase4_redshift(tmp, [camera_row_for_redshift()])
+    row = rows[0]
+    if row["redshift_status"] != "valid":
+        raise AssertionError(f"valid redshift row was not marked valid: {row}")
+    for field in ["emit_energy_zamo_gev", "observed_energy_gev", "redshift_factor"]:
+        if not math.isfinite(float(row[field])) or float(row[field]) <= 0.0:
+            raise AssertionError(f"invalid finite redshift field {field}: {row}")
+    if summary["n_redshift_valid"] != "1" or summary["n_redshift_invalid"] != "0":
+        raise AssertionError(f"bad redshift summary for valid row: {summary}")
+    if prov.get("photon_redshift_emitter_frame") != "ZAMO" or prov.get("photon_redshift_observer_frame") != "ZAMO":
+        raise AssertionError(f"redshift provenance missing frames: {prov}")
+    if prov.get("observed_energy_available") is not True:
+        raise AssertionError(f"redshift provenance did not expose observed energy availability: {prov}")
+
+
+def test_phase4_missing_crossing_momentum_blocks_observed_energy(tmp: Path) -> None:
+    row = camera_row_for_redshift()
+    row.pop("p_t_crossing")
+    rows, summary, _, _ = run_phase4_redshift(tmp, [row])
+    out = rows[0]
+    if out["redshift_status"] != "missing_required_momentum" or out["observed_energy_gev"] != "":
+        raise AssertionError(f"missing crossing momentum did not block redshift: {out}")
+    if summary["n_redshift_invalid"] != "1":
+        raise AssertionError(f"bad missing-momentum summary: {summary}")
+
+
+def test_phase4_emit_energy_mismatch_blocks_observed_energy(tmp: Path) -> None:
+    row = camera_row_for_redshift(input_energy_gev=20.0)
+    row["p_t_initial"] = -10.0 * math.sqrt(1.0 - 2.0 / float(row["initial_r_rg"]))
+    row["p_t_crossing"] = row["p_t_initial"]
+    rows, _, _, _ = run_phase4_redshift(tmp, [row])
+    out = rows[0]
+    if out["redshift_status"] != "invalid_emit_energy_mismatch" or out["observed_energy_gev"] != "":
+        raise AssertionError(f"energy mismatch did not block observed energy: {out}")
+
+
+def test_phase4_invalid_invariants_block_observed_energy(tmp: Path) -> None:
+    rows, _, _, _ = run_phase4_redshift(tmp, [camera_row_for_redshift(null_norm_max_abs_error=1.0e-2)])
+    out = rows[0]
+    if out["redshift_status"] != "invalid_invariants" or out["observed_energy_gev"] != "":
+        raise AssertionError(f"invalid invariants did not block observed energy: {out}")
+
+
+def test_phase4_fail_on_invalid_raises(tmp: Path) -> None:
+    try:
+        run_phase4_redshift(
+            tmp,
+            [camera_row_for_redshift(null_norm_max_abs_error=1.0e-2)],
+            fail_on_invalid=True,
+        )
+    except ValueError as exc:
+        if "invalid_invariants" not in str(exc):
+            raise AssertionError(f"fail_on_invalid raised unclear error: {exc}") from exc
+    else:
+        raise AssertionError("fail_on_invalid accepted an invalid redshift row")
+
+
+def test_phase4_invalid_frames_and_tolerances_rejected(tmp: Path) -> None:
+    args = type("Args", (), {})()
+    args.input = tmp / "photon_observer_camera.csv"
+    args.output_csv = tmp / "photon_observer_camera_redshift.csv"
+    args.summary_csv = tmp / "photon_observer_camera_redshift_summary.csv"
+    args.provenance = tmp / "photon_observer_camera_redshift_provenance.json"
+    args.spin = 0.0
+    args.photon_redshift_mode = "validated_zamo"
+    args.photon_redshift_emitter_frame = "ZAMO"
+    args.photon_redshift_observer_frame = "ZAMO"
+    args.photon_redshift_energy_tolerance = 1.0e-6
+    args.photon_redshift_fail_on_invalid = "true"
+    args.photon_invariant_tolerance = 1.0e-6
+    for key, value in [
+        ("photon_redshift_emitter_frame", "STATIC"),
+        ("photon_redshift_observer_frame", "STATIC"),
+        ("photon_redshift_energy_tolerance", 0.0),
+        ("photon_invariant_tolerance", 0.0),
+    ]:
+        old = getattr(args, key)
+        setattr(args, key, value)
+        try:
+            phase4_redshift.validate_config(args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid Phase 4 config was accepted: {key}={value}")
+        setattr(args, key, old)
+
+
+def test_phase4_rows_do_not_add_detector_or_aperture_fields(tmp: Path) -> None:
+    _, _, prov, csv_text = run_phase4_redshift(tmp, [camera_row_for_redshift()])
+    for forbidden in ["detector", "aperture", "instrument_response"]:
+        if forbidden in csv_text:
+            raise AssertionError(f"Phase 4 CSV row contains forbidden field {forbidden}: {csv_text}")
+    for key in ["detector_model_applied", "aperture_acceptance_applied", "instrument_response_applied"]:
+        if prov.get(key) is not False:
+            raise AssertionError(f"Phase 4 provenance missing false physical flag {key}: {prov}")
+
+
 def test_phase3_preserves_covariant_momentum_fields(tmp: Path) -> None:
     theta, phi = math.radians(70.0), 0.0
     source = phase3_hit_at(theta, phi)
@@ -962,6 +1262,7 @@ def main() -> int:
             lambda: test_pipeline_passes_all_parameters(base / "pipeline"),
             lambda: test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(base / "pipeline_phase2"),
             lambda: test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(base / "pipeline_phase3"),
+            lambda: test_pipeline_runs_phase4_only_for_validated_zamo(base / "pipeline_phase4"),
             test_wrapper_has_no_physical_defaults,
             test_pipeline_has_no_photon_physical_defaults,
             lambda: test_provenance_contains_phase1_limitations(binary, base / "provenance"),
@@ -980,6 +1281,14 @@ def main() -> int:
             test_phase3_invalid_fov_and_resolution_rejected,
             lambda: test_phase3_outputs_avoid_observed_energy_detector_and_aperture_fields(base / "phase3_forbidden"),
             lambda: test_phase3_provenance_records_projection_contract(base / "phase3_provenance"),
+            lambda: test_phase4_disabled_does_not_create_observed_energy(base / "phase4_disabled"),
+            lambda: test_phase4_validated_zamo_produces_finite_observed_energy(base / "phase4_valid"),
+            lambda: test_phase4_missing_crossing_momentum_blocks_observed_energy(base / "phase4_missing"),
+            lambda: test_phase4_emit_energy_mismatch_blocks_observed_energy(base / "phase4_mismatch"),
+            lambda: test_phase4_invalid_invariants_block_observed_energy(base / "phase4_invariants"),
+            lambda: test_phase4_fail_on_invalid_raises(base / "phase4_fail_on_invalid"),
+            lambda: test_phase4_invalid_frames_and_tolerances_rejected(base / "phase4_invalid_config"),
+            lambda: test_phase4_rows_do_not_add_detector_or_aperture_fields(base / "phase4_forbidden"),
             lambda: test_phase3_preserves_covariant_momentum_fields(base / "phase3_momentum"),
         ]
         for test in tests:

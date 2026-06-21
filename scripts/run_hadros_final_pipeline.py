@@ -89,6 +89,10 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_min_energy_gev",
         "photon_camera_output_mode",
         "photon_redshift_mode",
+        "photon_redshift_emitter_frame",
+        "photon_redshift_observer_frame",
+        "photon_redshift_energy_tolerance",
+        "photon_redshift_fail_on_invalid",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -109,8 +113,15 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported photon_observer_mode; expected 'escape_classifier', 'observer_sphere_hits', or 'observer_camera_projection'")
     if str(values["photon_observer_frame"]) != "ZAMO":
         raise ValueError("Only photon_observer_frame='ZAMO' is implemented in Phase 1")
-    if str(values["photon_redshift_mode"]) != "disabled_until_validated":
-        raise ValueError("Photon redshift is not implemented in Phase 1")
+    if str(values["photon_redshift_mode"]) not in {"disabled", "validated_zamo"}:
+        raise ValueError("Unsupported photon_redshift_mode; expected 'disabled' or 'validated_zamo'")
+    if str(values["photon_redshift_emitter_frame"]) != "ZAMO":
+        raise ValueError("Only photon_redshift_emitter_frame='ZAMO' is implemented")
+    if str(values["photon_redshift_observer_frame"]) != "ZAMO":
+        raise ValueError("Only photon_redshift_observer_frame='ZAMO' is implemented")
+    if not math.isfinite(float(values["photon_redshift_energy_tolerance"])) or float(values["photon_redshift_energy_tolerance"]) <= 0.0:
+        raise ValueError("photon_redshift_energy_tolerance must be > 0")
+    as_bool(values["photon_redshift_fail_on_invalid"])
     if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
         raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
     if str(values["photon_camera_projection_mode"]) != "gnomonic_pinhole":
@@ -274,6 +285,10 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_min_energy_gev": float(photon["photon_min_energy_gev"]),
         "photon_camera_output_mode": photon["photon_camera_output_mode"],
         "photon_redshift_mode": photon["photon_redshift_mode"],
+        "photon_redshift_emitter_frame": photon["photon_redshift_emitter_frame"],
+        "photon_redshift_observer_frame": photon["photon_redshift_observer_frame"],
+        "photon_redshift_energy_tolerance": float(photon["photon_redshift_energy_tolerance"]),
+        "photon_redshift_fail_on_invalid": as_bool(photon["photon_redshift_fail_on_invalid"]),
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -307,6 +322,11 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             else "not_run"
         ),
         "photon_observer_camera_observed_energy_available": False,
+        "photon_observer_camera_redshift_phase": (
+            "photon_observer_camera_redshift"
+            if photon_mode == "observer_camera_projection" and str(photon["photon_redshift_mode"]) == "validated_zamo"
+            else "not_run"
+        ),
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
         "photon_observer_camera_aperture_acceptance_applied": False,
@@ -670,6 +690,46 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     ],
                 )
             )
+            if str(photon["photon_redshift_mode"]) == "validated_zamo":
+                if "spin" not in config:
+                    raise ValueError("spin is required for photon observer camera redshift")
+                fail_on_redshift_invalid = "true" if as_bool(photon["photon_redshift_fail_on_invalid"]) else "false"
+                steps.append(
+                    FinalStep(
+                        "photon_observer_camera_redshift",
+                        [
+                            sys.executable,
+                            "scripts/science/build_photon_observer_camera_redshift.py",
+                            "--input",
+                            str(cascade / "photon_observer_camera.csv"),
+                            "--output-csv",
+                            str(cascade / "photon_observer_camera_redshift.csv"),
+                            "--summary-csv",
+                            str(cascade / "photon_observer_camera_redshift_summary.csv"),
+                            "--provenance",
+                            str(cascade / "photon_observer_camera_redshift_provenance.json"),
+                            "--spin",
+                            str(config["spin"]),
+                            "--photon-redshift-mode",
+                            str(photon["photon_redshift_mode"]),
+                            "--photon-redshift-emitter-frame",
+                            str(photon["photon_redshift_emitter_frame"]),
+                            "--photon-redshift-observer-frame",
+                            str(photon["photon_redshift_observer_frame"]),
+                            "--photon-redshift-energy-tolerance",
+                            str(photon["photon_redshift_energy_tolerance"]),
+                            "--photon-redshift-fail-on-invalid",
+                            fail_on_redshift_invalid,
+                            "--photon-invariant-tolerance",
+                            str(photon["photon_invariant_tolerance"]),
+                        ],
+                        [
+                            cascade / "photon_observer_camera_redshift.csv",
+                            cascade / "photon_observer_camera_redshift_summary.csv",
+                            cascade / "photon_observer_camera_redshift_provenance.json",
+                        ],
+                    )
+                )
     if mode == "uhe_cascade":
         return steps
     if association_mode == "full_transport":
