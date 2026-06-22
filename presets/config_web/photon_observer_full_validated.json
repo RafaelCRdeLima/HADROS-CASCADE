@@ -1,0 +1,19 @@
+{
+  "run": {
+    "run_name": "Photon_Observer_Full_Validated",
+    "output_dir": "output/Photon_Observer_Full_Validated",
+    "physics_mode": "uhe_cascade"
+  },
+  "photon_escape_classifier": {
+    "enable_photon_observer_camera": true,
+    "photon_observer_mode": "observer_camera_projection",
+    "photon_redshift_mode": "validated_zamo",
+    "enable_photon_validation_gate": true,
+    "enable_photon_observer_science_products": true,
+    "enable_photon_observer_spectra": true,
+    "enable_photon_opacity": true,
+    "photon_opacity_mode": "vacuum",
+    "photon_opacity_output_mode": "separate_file",
+    "enable_photon_path_sampling": false
+  }
+}
