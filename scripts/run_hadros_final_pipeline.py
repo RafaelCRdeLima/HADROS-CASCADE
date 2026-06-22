@@ -24,6 +24,7 @@ class FinalStep:
     command: list[str]
     required_outputs: list[Path]
     continue_on_geant4_partial: bool = False
+    allow_empty_outputs: tuple[Path, ...] = ()
 
 
 def as_bool(value: Any, default: bool = False) -> bool:
@@ -567,6 +568,13 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
         fail_on_invariant = "true" if as_bool(photon["photon_fail_on_invariant_violation"]) else "false"
         steps.append(
             FinalStep(
+                "build_photon_escape_classifier",
+                ["make", "compute_kerr_photon_escape_classifier"],
+                [ROOT / "build" / "compute_kerr_photon_escape_classifier"],
+            )
+        )
+        steps.append(
+            FinalStep(
                 "photon_escape_classifier",
                 [
                     sys.executable,
@@ -611,6 +619,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     cascade / "photon_escape_summary.csv",
                     cascade / "photon_escape_provenance.json",
                 ],
+                allow_empty_outputs=(cascade / "photon_escape_classifier.jsonl",),
             )
         )
         if photon_mode in {"observer_sphere_hits", "observer_camera_projection"}:
@@ -636,6 +645,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                         cascade / "photon_observer_sphere_summary.csv",
                         cascade / "photon_observer_sphere_provenance.json",
                     ],
+                    allow_empty_outputs=(cascade / "photon_observer_sphere_hits.jsonl",),
                 )
             )
         if photon_mode == "observer_camera_projection":
@@ -876,8 +886,14 @@ def write_plan(path: Path, steps: list[FinalStep]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def outputs_ready(paths: list[Path]) -> bool:
-    return all(path.exists() and path.stat().st_size > 0 for path in paths)
+def outputs_ready(paths: list[Path], allow_empty_outputs: tuple[Path, ...] = ()) -> bool:
+    allow_empty = {path.resolve() for path in allow_empty_outputs}
+    for path in paths:
+        if not path.exists():
+            return False
+        if path.stat().st_size <= 0 and path.resolve() not in allow_empty:
+            return False
+    return True
 
 
 def prepare_output_tree(output_dir: Path) -> None:
@@ -954,7 +970,11 @@ def run_steps(steps: list[FinalStep], log_path: Path) -> int:
         stdout = "".join(stdout_parts)
         lines.append(stdout)
         if returncode != 0:
-            if step.continue_on_geant4_partial and returncode == 2 and outputs_ready(step.required_outputs):
+            if (
+                step.continue_on_geant4_partial
+                and returncode == 2
+                and outputs_ready(step.required_outputs, step.allow_empty_outputs)
+            ):
                 lines.append(f"[warn] {step.name}: partial return code 2 with required outputs present")
                 print(lines[-1], flush=True)
             else:
@@ -969,7 +989,7 @@ def run_steps(steps: list[FinalStep], log_path: Path) -> int:
                     stdout=stdout,
                 )
                 return returncode
-        if not outputs_ready(step.required_outputs):
+        if not outputs_ready(step.required_outputs, step.allow_empty_outputs):
             lines.append(f"[fail] {step.name}: missing required output")
             print(lines[-1], flush=True)
             log_path.write_text("\n".join(lines), encoding="utf-8")
