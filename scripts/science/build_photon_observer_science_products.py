@@ -134,7 +134,7 @@ def selected_attenuated_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str,
     for row in rows:
         if row.get("redshift_status") != "valid":
             continue
-        if row.get("photon_opacity_status") not in {"valid_vacuum"}:
+        if not str(row.get("photon_opacity_status", "")).startswith("valid"):
             continue
         if not as_bool(row.get("inside_fov")):
             continue
@@ -400,8 +400,6 @@ def main() -> int:
         if args.attenuated_csv is not None and args.attenuated_csv.exists():
             attenuated_fields, attenuated_input_rows = read_csv(args.attenuated_csv)
             attenuated_selected, opacity_mode = selected_attenuated_rows(attenuated_input_rows)
-            if opacity_mode != "vacuum":
-                raise ValueError(f"only photon_opacity_mode='vacuum' is supported for attenuated science products, got {opacity_mode!r}")
             att_maps = attenuated_maps(attenuated_selected, nx, ny)
             write_csv_rows(
                 args.output_dir / "photon_observer_attenuated_energy_map.csv",

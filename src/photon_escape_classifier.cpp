@@ -20,6 +20,7 @@ constexpr double PI = 3.141592653589793238462643383279502884;
 constexpr double REL_EPS = 1.0e-300;
 
 struct PhotonRecord {
+    long long photon_path_id = 0;
     long long event_id = 0;
     long long particle_id = 0;
     int pdg = 0;
@@ -39,6 +40,7 @@ struct PhotonRecord {
 };
 
 struct PhotonResult {
+    long long photon_path_id = 0;
     long long event_id = 0;
     long long particle_id = 0;
     int pdg = 22;
@@ -75,10 +77,84 @@ struct PhotonResult {
     double observer_crossing_r_rg = std::numeric_limits<double>::quiet_NaN();
     double observer_crossing_theta_rad = std::numeric_limits<double>::quiet_NaN();
     double observer_crossing_phi_rad = std::numeric_limits<double>::quiet_NaN();
+    double total_path_length_rg = 0.0;
     std::string crossing_momentum_method = "not_available";
     double crossing_r_error_rg = std::numeric_limits<double>::quiet_NaN();
     double crossing_null_norm_abs_error = std::numeric_limits<double>::quiet_NaN();
     std::string failure_reason;
+};
+
+struct PathSample {
+    long long photon_path_id = 0;
+    long long event_id = 0;
+    long long particle_id = 0;
+    int sample_index = 0;
+    double lambda = 0.0;
+    double r_rg = std::numeric_limits<double>::quiet_NaN();
+    double theta_rad = std::numeric_limits<double>::quiet_NaN();
+    double phi_rad = std::numeric_limits<double>::quiet_NaN();
+    double p[4] = {
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+    };
+    double dl_rg = 0.0;
+    std::string classification_so_far = "integrating";
+    bool observer_crossing_reached = false;
+    double null_norm_abs = std::numeric_limits<double>::quiet_NaN();
+    double E_killing = std::numeric_limits<double>::quiet_NaN();
+    double Lz = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct PhotonPath {
+    std::vector<PathSample> samples;
+    bool truncated = false;
+    double total_path_length_rg = 0.0;
+};
+
+struct PathSamplingSummary {
+    std::size_t n_photons_with_paths = 0;
+    std::size_t n_total_samples = 0;
+    std::size_t max_samples_per_photon = 0;
+    std::size_t n_truncated_paths = 0;
+    std::size_t n_photons_with_per_photon_summary = 0;
+    std::size_t n_final_p_mu_mismatch = 0;
+    double max_null_norm_abs = 0.0;
+    double max_relative_E_error = 0.0;
+    double max_relative_Lz_error = 0.0;
+    double max_crossing_r_error_rg = 0.0;
+    double max_final_p_mu_error = 0.0;
+    double total_path_length_rg_min = std::numeric_limits<double>::infinity();
+    double total_path_length_rg_max = 0.0;
+    double total_path_length_rg_sum = 0.0;
+};
+
+struct PathPerPhotonSummary {
+    long long photon_path_id = 0;
+    long long event_id = 0;
+    long long particle_id = 0;
+    std::size_t n_samples = 0;
+    double first_r_rg = std::numeric_limits<double>::quiet_NaN();
+    double first_theta_rad = std::numeric_limits<double>::quiet_NaN();
+    double first_phi_rad = std::numeric_limits<double>::quiet_NaN();
+    double last_r_rg = std::numeric_limits<double>::quiet_NaN();
+    double last_theta_rad = std::numeric_limits<double>::quiet_NaN();
+    double last_phi_rad = std::numeric_limits<double>::quiet_NaN();
+    bool observer_crossing_reached = false;
+    double crossing_r_error_rg = std::numeric_limits<double>::quiet_NaN();
+    double final_p_t_minus_crossing = std::numeric_limits<double>::quiet_NaN();
+    double final_p_r_minus_crossing = std::numeric_limits<double>::quiet_NaN();
+    double final_p_theta_minus_crossing = std::numeric_limits<double>::quiet_NaN();
+    double final_p_phi_minus_crossing = std::numeric_limits<double>::quiet_NaN();
+    bool final_p_mu_matches_crossing = false;
+    double total_path_length_rg = 0.0;
+    bool truncated = false;
+    std::string truncation_status = "complete";
+    double max_null_norm_abs = 0.0;
+    double relative_E_killing_error = std::numeric_limits<double>::quiet_NaN();
+    double relative_Lz_error = std::numeric_limits<double>::quiet_NaN();
+    double max_final_p_mu_error = std::numeric_limits<double>::quiet_NaN();
 };
 
 bool starts_with(const std::string& value, const std::string& prefix)
@@ -350,6 +426,91 @@ bool finite_pcov(const double p[4])
     return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::isfinite(p[3]);
 }
 
+double wrap_delta_phi(double delta)
+{
+    while (delta > PI) {
+        delta -= 2.0 * PI;
+    }
+    while (delta < -PI) {
+        delta += 2.0 * PI;
+    }
+    return delta;
+}
+
+double spatial_path_length_rg(const KerrMetric& metric, const GeodesicState& previous, const GeodesicState& current)
+{
+    const double r_mid = 0.5 * (previous.r + current.r);
+    const double theta_mid = std::clamp(0.5 * (previous.theta + current.theta), 1.0e-12, PI - 1.0e-12);
+    const double dr = current.r - previous.r;
+    const double dtheta = current.theta - previous.theta;
+    const double dphi = wrap_delta_phi(current.phi - previous.phi);
+    const double sigma = metric.Sigma(r_mid, theta_mid);
+    const double delta = metric.Delta(r_mid);
+    const double a_term = metric.A(r_mid, theta_mid);
+    if (!std::isfinite(sigma) || !std::isfinite(delta) || !std::isfinite(a_term) || delta <= 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double sin_theta = std::sin(theta_mid);
+    const double g_rr = sigma / delta;
+    const double g_thetatheta = sigma;
+    const double g_phiphi = a_term * sin_theta * sin_theta / sigma;
+    const double dl2 = g_rr * dr * dr + g_thetatheta * dtheta * dtheta + g_phiphi * dphi * dphi;
+    if (!std::isfinite(dl2)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::sqrt(std::max(0.0, dl2));
+}
+
+PathSample make_path_sample(
+    const PhotonRecord& record,
+    const KerrMetric& metric,
+    const GeodesicState& state,
+    int sample_index,
+    double lambda,
+    double dl_rg,
+    const std::string& classification_so_far,
+    bool observer_crossing_reached
+)
+{
+    PathSample sample;
+    sample.photon_path_id = record.photon_path_id;
+    sample.event_id = record.event_id;
+    sample.particle_id = record.particle_id;
+    sample.sample_index = sample_index;
+    sample.lambda = lambda;
+    sample.r_rg = state.r;
+    sample.theta_rad = state.theta;
+    sample.phi_rad = state.phi;
+    store_pcov(sample.p, state);
+    sample.dl_rg = dl_rg;
+    sample.classification_so_far = classification_so_far;
+    sample.observer_crossing_reached = observer_crossing_reached;
+    sample.null_norm_abs = std::abs(null_norm_from_pcov(metric, state));
+    sample.E_killing = -state.pt;
+    sample.Lz = state.pphi;
+    return sample;
+}
+
+void add_path_sample(
+    PhotonPath& path,
+    const PhotonEscapeConfig& config,
+    const PathSample& sample,
+    bool preserve_terminal_sample = false
+)
+{
+    if (std::isfinite(sample.dl_rg) && sample.dl_rg >= 0.0) {
+        path.total_path_length_rg += sample.dl_rg;
+    }
+    if (static_cast<int>(path.samples.size()) >= config.photon_path_sample_max_rows_per_photon) {
+        path.truncated = true;
+        if (preserve_terminal_sample && !path.samples.empty()) {
+            path.samples.back() = sample;
+        }
+        return;
+    }
+    path.samples.push_back(sample);
+}
+
 bool valid_config(const PhotonEscapeConfig& config)
 {
     return std::isfinite(config.spin)
@@ -362,12 +523,21 @@ bool valid_config(const PhotonEscapeConfig& config)
         && std::isfinite(config.photon_horizon_crossing_tolerance_rg) && config.photon_horizon_crossing_tolerance_rg >= 0.0
         && std::isfinite(config.photon_observer_crossing_tolerance_rg) && config.photon_observer_crossing_tolerance_rg > 0.0
         && std::isfinite(config.photon_min_energy_gev) && config.photon_min_energy_gev >= 0.0
-        && config.observer_frame == "ZAMO";
+        && config.observer_frame == "ZAMO"
+        && config.photon_path_sample_stride > 0
+        && config.photon_path_sample_max_rows_per_photon > 0
+        && config.photon_path_sampling_output_format == "jsonl"
+        && (!config.enable_photon_path_sampling
+            || (!config.path_samples_jsonl.empty()
+                && !config.path_samples_summary_csv.empty()
+                && !config.path_samples_per_photon_summary_csv.empty()
+                && !config.path_samples_provenance.empty()));
 }
 
 PhotonResult fail_result(const PhotonRecord& record, const std::string& classification, const std::string& reason)
 {
     PhotonResult result;
+    result.photon_path_id = record.photon_path_id;
     result.event_id = record.event_id;
     result.particle_id = record.particle_id;
     result.pdg = record.pdg;
@@ -402,9 +572,10 @@ bool has_generic_momentum_without_mode(const PhotonRecord& record)
     return record.has_ambiguous_generic_momentum_input;
 }
 
-PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfig& config)
+PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfig& config, PhotonPath* path)
 {
     PhotonResult result;
+    result.photon_path_id = record.photon_path_id;
     result.event_id = record.event_id;
     result.particle_id = record.particle_id;
     result.pdg = record.pdg;
@@ -502,6 +673,16 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
     bool captured = false;
     bool missed = false;
     bool failed = false;
+    double lambda = 0.0;
+    GeodesicState last_sampled_state = state;
+
+    if (path != nullptr) {
+        add_path_sample(
+            *path,
+            config,
+            make_path_sample(record, metric, state, 0, lambda, 0.0, "integrating", false)
+        );
+    }
 
     if (state.r >= config.observer_radius_rg) {
         reached = true;
@@ -514,11 +695,16 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         result.crossing_momentum_method = "initial_state_already_at_or_beyond_observer_sphere";
         result.crossing_r_error_rg = std::abs(state.r - config.observer_radius_rg);
         result.crossing_null_norm_abs_error = std::abs(null_norm_from_pcov(metric, state));
+        if (path != nullptr && !path->samples.empty()) {
+            path->samples.back().classification_so_far = "reaches_observer_sphere";
+            path->samples.back().observer_crossing_reached = true;
+        }
     }
 
     for (int step = 0; !reached && !captured && !missed && !failed && step < config.max_geodesic_steps; ++step) {
         const GeodesicState previous_state = state;
         geodesic.step_rk4(state);
+        lambda += config.geodesic_step_rg;
         result.geodesic_steps = step + 1;
         if (!finite_state(state)) {
             failed = true;
@@ -527,6 +713,17 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         }
         if (previous_state.r > horizon && state.r <= horizon_crossing_radius) {
             captured = true;
+            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
+            if (path != nullptr) {
+                const double dl = spatial_path_length_rg(metric, last_sampled_state, state);
+                add_path_sample(
+                    *path,
+                    config,
+                    make_path_sample(record, metric, state, static_cast<int>(path->samples.size()), lambda, dl, "captured_by_black_hole", false),
+                    true
+                );
+                last_sampled_state = state;
+            }
             break;
         }
         const double norm = null_norm_from_pcov(metric, state);
@@ -553,19 +750,68 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
             result.crossing_momentum_method = "fractional_rk_crossing_state";
             result.crossing_r_error_rg = std::abs(crossing_state.r - config.observer_radius_rg);
             result.crossing_null_norm_abs_error = std::abs(null_norm_from_pcov(metric, crossing_state));
+            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, crossing_state);
             if (std::isfinite(result.crossing_null_norm_abs_error)) {
                 result.null_norm_max_abs_error = std::max(
                     result.null_norm_max_abs_error,
                     result.crossing_null_norm_abs_error
                 );
             }
+            if (path != nullptr) {
+                const double dl = spatial_path_length_rg(metric, last_sampled_state, crossing_state);
+                const double crossing_lambda = lambda - config.geodesic_step_rg
+                    + config.geodesic_step_rg * std::clamp(
+                        std::abs(state.r - previous_state.r) > REL_EPS
+                            ? (crossing_state.r - previous_state.r) / (state.r - previous_state.r)
+                            : 1.0,
+                        0.0,
+                        1.0
+                    );
+                add_path_sample(
+                    *path,
+                    config,
+                    make_path_sample(
+                        record,
+                        metric,
+                        crossing_state,
+                        static_cast<int>(path->samples.size()),
+                        crossing_lambda,
+                        dl,
+                        "reaches_observer_sphere",
+                        true
+                    ),
+                    true
+                );
+                last_sampled_state = crossing_state;
+            }
             reached = true;
             break;
         }
         if (state.r > config.max_radius_rg) {
             missed = true;
+            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
+            if (path != nullptr) {
+                const double dl = spatial_path_length_rg(metric, last_sampled_state, state);
+                add_path_sample(
+                    *path,
+                    config,
+                    make_path_sample(record, metric, state, static_cast<int>(path->samples.size()), lambda, dl, "escapes_but_misses_observer", false),
+                    true
+                );
+                last_sampled_state = state;
+            }
             break;
         }
+        if (path != nullptr && ((step + 1) % config.photon_path_sample_stride == 0)) {
+            const double dl = spatial_path_length_rg(metric, last_sampled_state, state);
+            add_path_sample(
+                *path,
+                config,
+                make_path_sample(record, metric, state, static_cast<int>(path->samples.size()), lambda, dl, "integrating", false)
+            );
+            last_sampled_state = state;
+        }
+        result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
     }
 
     if (!reached && !captured && !missed && !failed) {
@@ -639,7 +885,8 @@ void write_json_number(std::ostream& out, const std::string& key, double value)
 
 void write_result(std::ostream& out, const PhotonResult& result)
 {
-    out << "{\"event_id\":" << result.event_id
+    out << "{\"photon_path_id\":" << result.photon_path_id
+        << ",\"event_id\":" << result.event_id
         << ",\"particle_id\":" << result.particle_id
         << ",\"pdg\":" << result.pdg;
     write_json_number(out, "input_energy_gev", result.input_energy_gev);
@@ -673,10 +920,34 @@ void write_result(std::ostream& out, const PhotonResult& result)
     write_json_number(out, "observer_crossing_r_rg", result.observer_crossing_r_rg);
     write_json_number(out, "observer_crossing_theta_rad", result.observer_crossing_theta_rad);
     write_json_number(out, "observer_crossing_phi_rad", result.observer_crossing_phi_rad);
+    write_json_number(out, "total_path_length_rg", result.total_path_length_rg);
     write_json_field(out, "crossing_momentum_method", result.crossing_momentum_method);
     write_json_number(out, "crossing_r_error_rg", result.crossing_r_error_rg);
     write_json_number(out, "crossing_null_norm_abs_error", result.crossing_null_norm_abs_error);
     write_json_field(out, "failure_reason", result.failure_reason);
+    out << "}\n";
+}
+
+void write_path_sample(std::ostream& out, const PathSample& sample)
+{
+    out << "{\"photon_path_id\":" << sample.photon_path_id
+        << ",\"event_id\":" << sample.event_id
+        << ",\"particle_id\":" << sample.particle_id
+        << ",\"sample_index\":" << sample.sample_index;
+    write_json_number(out, "lambda", sample.lambda);
+    write_json_number(out, "r_rg", sample.r_rg);
+    write_json_number(out, "theta_rad", sample.theta_rad);
+    write_json_number(out, "phi_rad", sample.phi_rad);
+    write_json_number(out, "p_t", sample.p[0]);
+    write_json_number(out, "p_r", sample.p[1]);
+    write_json_number(out, "p_theta", sample.p[2]);
+    write_json_number(out, "p_phi", sample.p[3]);
+    write_json_number(out, "dl_rg", sample.dl_rg);
+    write_json_field(out, "classification_so_far", sample.classification_so_far);
+    out << ",\"observer_crossing_reached\":" << (sample.observer_crossing_reached ? "true" : "false");
+    write_json_number(out, "null_norm_abs", sample.null_norm_abs);
+    write_json_number(out, "E_killing", sample.E_killing);
+    write_json_number(out, "Lz", sample.Lz);
     out << "}\n";
 }
 
@@ -696,6 +967,121 @@ void update_summary(PhotonEscapeSummary& summary, const PhotonResult& result)
         if (result.classification == "integration_failed_invariant_violation") {
             ++summary.n_failed_invariant_violation;
         }
+    }
+}
+
+bool should_write_path_samples(const PhotonEscapeConfig& config, const PhotonResult& result, const PhotonPath& path)
+{
+    if (!config.enable_photon_path_sampling || path.samples.empty()) {
+        return false;
+    }
+    if (!config.photon_path_sampling_require_validation) {
+        return true;
+    }
+    return result.invariant_status == "pass"
+        && result.classification != "integration_failed"
+        && result.classification != "integration_failed_invalid_null_momentum"
+        && result.classification != "integration_failed_invariant_violation";
+}
+
+double max_abs4(double a, double b, double c, double d)
+{
+    return std::max(std::max(std::abs(a), std::abs(b)), std::max(std::abs(c), std::abs(d)));
+}
+
+PathPerPhotonSummary make_path_per_photon_summary(
+    const PhotonResult& result,
+    const PhotonPath& path
+)
+{
+    PathPerPhotonSummary row;
+    row.photon_path_id = result.photon_path_id;
+    row.event_id = result.event_id;
+    row.particle_id = result.particle_id;
+    row.n_samples = path.samples.size();
+    row.total_path_length_rg = path.total_path_length_rg;
+    row.truncated = path.truncated;
+    row.truncation_status = path.truncated ? "truncated_max_rows_per_photon" : "complete";
+    row.relative_E_killing_error = result.relative_E_error;
+    row.relative_Lz_error = result.relative_Lz_error;
+    row.crossing_r_error_rg = result.crossing_r_error_rg;
+
+    for (const PathSample& sample : path.samples) {
+        if (std::isfinite(sample.null_norm_abs)) {
+            row.max_null_norm_abs = std::max(row.max_null_norm_abs, sample.null_norm_abs);
+        }
+    }
+
+    if (!path.samples.empty()) {
+        const PathSample& first = path.samples.front();
+        const PathSample& last = path.samples.back();
+        row.first_r_rg = first.r_rg;
+        row.first_theta_rad = first.theta_rad;
+        row.first_phi_rad = first.phi_rad;
+        row.last_r_rg = last.r_rg;
+        row.last_theta_rad = last.theta_rad;
+        row.last_phi_rad = last.phi_rad;
+        row.observer_crossing_reached = last.observer_crossing_reached;
+        if (result.crossing_momentum_available) {
+            row.final_p_t_minus_crossing = last.p[0] - result.p_crossing[0];
+            row.final_p_r_minus_crossing = last.p[1] - result.p_crossing[1];
+            row.final_p_theta_minus_crossing = last.p[2] - result.p_crossing[2];
+            row.final_p_phi_minus_crossing = last.p[3] - result.p_crossing[3];
+            row.max_final_p_mu_error = max_abs4(
+                row.final_p_t_minus_crossing,
+                row.final_p_r_minus_crossing,
+                row.final_p_theta_minus_crossing,
+                row.final_p_phi_minus_crossing
+            );
+            row.final_p_mu_matches_crossing = row.observer_crossing_reached
+                && std::isfinite(row.max_final_p_mu_error)
+                && row.max_final_p_mu_error <= 1.0e-10;
+        }
+    }
+    return row;
+}
+
+void update_path_summary(
+    PathSamplingSummary& summary,
+    const PhotonResult& result,
+    const PhotonPath& path,
+    const PathPerPhotonSummary& per_photon
+)
+{
+    if (path.samples.empty()) {
+        return;
+    }
+    ++summary.n_photons_with_paths;
+    summary.n_total_samples += path.samples.size();
+    summary.max_samples_per_photon = std::max(summary.max_samples_per_photon, path.samples.size());
+    if (path.truncated) {
+        ++summary.n_truncated_paths;
+    }
+    ++summary.n_photons_with_per_photon_summary;
+    if (per_photon.observer_crossing_reached && !per_photon.final_p_mu_matches_crossing) {
+        ++summary.n_final_p_mu_mismatch;
+    }
+    if (std::isfinite(per_photon.crossing_r_error_rg)) {
+        summary.max_crossing_r_error_rg = std::max(summary.max_crossing_r_error_rg, per_photon.crossing_r_error_rg);
+    }
+    if (std::isfinite(per_photon.max_final_p_mu_error)) {
+        summary.max_final_p_mu_error = std::max(summary.max_final_p_mu_error, per_photon.max_final_p_mu_error);
+    }
+    for (const PathSample& sample : path.samples) {
+        if (std::isfinite(sample.null_norm_abs)) {
+            summary.max_null_norm_abs = std::max(summary.max_null_norm_abs, sample.null_norm_abs);
+        }
+    }
+    if (std::isfinite(result.relative_E_error)) {
+        summary.max_relative_E_error = std::max(summary.max_relative_E_error, result.relative_E_error);
+    }
+    if (std::isfinite(result.relative_Lz_error)) {
+        summary.max_relative_Lz_error = std::max(summary.max_relative_Lz_error, result.relative_Lz_error);
+    }
+    if (std::isfinite(path.total_path_length_rg)) {
+        summary.total_path_length_rg_min = std::min(summary.total_path_length_rg_min, path.total_path_length_rg);
+        summary.total_path_length_rg_max = std::max(summary.total_path_length_rg_max, path.total_path_length_rg);
+        summary.total_path_length_rg_sum += path.total_path_length_rg;
     }
 }
 
@@ -719,6 +1105,86 @@ void write_summary_csv(const std::string& path, const PhotonEscapeSummary& summa
         << summary.n_input_particles << ","
         << summary.n_photons << ","
         << summary.n_non_photons << "\n";
+}
+
+void write_path_summary_csv(const std::string& path, const PathSamplingSummary& summary)
+{
+    std::ofstream out(path);
+    ensure_output(out, path);
+    const double mean_samples = summary.n_photons_with_paths > 0
+        ? static_cast<double>(summary.n_total_samples) / static_cast<double>(summary.n_photons_with_paths)
+        : 0.0;
+    const double min_length = std::isfinite(summary.total_path_length_rg_min)
+        ? summary.total_path_length_rg_min
+        : 0.0;
+    const double mean_length = summary.n_photons_with_paths > 0
+        ? summary.total_path_length_rg_sum / static_cast<double>(summary.n_photons_with_paths)
+        : 0.0;
+    out << "n_photons_with_paths,n_total_samples,mean_samples_per_photon,"
+           "max_samples_per_photon,n_truncated_paths,max_null_norm_abs,"
+           "max_relative_E_error,max_relative_Lz_error,total_path_length_rg_min,"
+           "total_path_length_rg_max,total_path_length_rg_mean,"
+           "n_photons_with_per_photon_summary,n_final_p_mu_mismatch,"
+           "max_crossing_r_error_rg,max_final_p_mu_error\n";
+    out << summary.n_photons_with_paths << ","
+        << summary.n_total_samples << ","
+        << mean_samples << ","
+        << summary.max_samples_per_photon << ","
+        << summary.n_truncated_paths << ","
+        << summary.max_null_norm_abs << ","
+        << summary.max_relative_E_error << ","
+        << summary.max_relative_Lz_error << ","
+        << min_length << ","
+        << summary.total_path_length_rg_max << ","
+        << mean_length << ","
+        << summary.n_photons_with_per_photon_summary << ","
+        << summary.n_final_p_mu_mismatch << ","
+        << summary.max_crossing_r_error_rg << ","
+        << summary.max_final_p_mu_error << "\n";
+}
+
+void write_path_per_photon_summary_csv(
+    const std::string& path,
+    const std::vector<PathPerPhotonSummary>& rows
+)
+{
+    std::ofstream out(path);
+    ensure_output(out, path);
+    out << "photon_path_id,event_id,particle_id,n_samples,"
+           "first_r_rg,first_theta_rad,first_phi_rad,"
+           "last_r_rg,last_theta_rad,last_phi_rad,"
+           "observer_crossing_reached,crossing_r_error_rg,"
+           "final_p_t_minus_crossing,final_p_r_minus_crossing,"
+           "final_p_theta_minus_crossing,final_p_phi_minus_crossing,"
+           "final_p_mu_matches_crossing,total_path_length_rg,"
+           "truncated,truncation_status,max_null_norm_abs,"
+           "relative_E_killing_error,relative_Lz_error\n";
+    out << std::setprecision(17);
+    for (const PathPerPhotonSummary& row : rows) {
+        out << row.photon_path_id << ","
+            << row.event_id << ","
+            << row.particle_id << ","
+            << row.n_samples << ","
+            << row.first_r_rg << ","
+            << row.first_theta_rad << ","
+            << row.first_phi_rad << ","
+            << row.last_r_rg << ","
+            << row.last_theta_rad << ","
+            << row.last_phi_rad << ","
+            << (row.observer_crossing_reached ? "true" : "false") << ","
+            << row.crossing_r_error_rg << ","
+            << row.final_p_t_minus_crossing << ","
+            << row.final_p_r_minus_crossing << ","
+            << row.final_p_theta_minus_crossing << ","
+            << row.final_p_phi_minus_crossing << ","
+            << (row.final_p_mu_matches_crossing ? "true" : "false") << ","
+            << row.total_path_length_rg << ","
+            << (row.truncated ? "true" : "false") << ","
+            << row.truncation_status << ","
+            << row.max_null_norm_abs << ","
+            << row.relative_E_killing_error << ","
+            << row.relative_Lz_error << "\n";
+    }
 }
 
 void write_summary_md(const std::string& path, const PhotonEscapeSummary& summary)
@@ -745,6 +1211,37 @@ void write_summary_md(const std::string& path, const PhotonEscapeSummary& summar
         << "| n_failed | " << summary.n_failed << " |\n";
 }
 
+void write_path_provenance(
+    const std::string& path,
+    const PhotonEscapeConfig& config,
+    const PathSamplingSummary& summary
+)
+{
+    std::ofstream out(path);
+    ensure_output(out, path);
+    out << "{\n"
+        << "  \"phase\":\"photon_geodesic_path_sampling\",\n"
+        << "  \"output_format\":\"" << config.photon_path_sampling_output_format << "\",\n"
+        << "  \"sample_stride\":" << config.photon_path_sample_stride << ",\n"
+        << "  \"max_rows_per_photon\":" << config.photon_path_sample_max_rows_per_photon << ",\n"
+        << "  \"require_validation\":" << (config.photon_path_sampling_require_validation ? "true" : "false") << ",\n"
+        << "  \"dl_method\":\"spatial_kerr_metric_midpoint\",\n"
+        << "  \"per_photon_summary_available\":true,\n"
+        << "  \"requires_stride_1_for_physical_opacity\":true,\n"
+        << "  \"recommended_for_tabulated_gray_path\":" << (config.photon_path_sample_stride == 1 ? "true" : "false") << ",\n"
+        << "  \"no_medium_lookup\":true,\n"
+        << "  \"no_opacity_applied\":true,\n"
+        << "  \"detector_model_applied\":false,\n"
+        << "  \"instrument_response_applied\":false,\n"
+        << "  \"aperture_acceptance_applied\":false,\n"
+        << "  \"purpose\":\"prepare_future_photon_opacity\",\n"
+        << "  \"n_photons_with_paths\":" << summary.n_photons_with_paths << ",\n"
+        << "  \"n_total_samples\":" << summary.n_total_samples << ",\n"
+        << "  \"n_truncated_paths\":" << summary.n_truncated_paths << ",\n"
+        << "  \"limitation\":\"Path samples are geometric Kerr geodesic states only; no medium, opacity, absorption, detector, or radiative-transfer quantities are computed.\"\n"
+        << "}\n";
+}
+
 void write_provenance(const std::string& path, const PhotonEscapeConfig& config, const PhotonEscapeSummary& summary)
 {
     std::ofstream out(path);
@@ -766,6 +1263,11 @@ void write_provenance(const std::string& path, const PhotonEscapeConfig& config,
         << "  \"photon_min_energy_gev\":" << config.photon_min_energy_gev << ",\n"
         << "  \"photon_geodesic_step_rg\":" << config.geodesic_step_rg << ",\n"
         << "  \"photon_max_geodesic_steps\":" << config.max_geodesic_steps << ",\n"
+        << "  \"enable_photon_path_sampling\":" << (config.enable_photon_path_sampling ? "true" : "false") << ",\n"
+        << "  \"photon_path_sample_stride\":" << config.photon_path_sample_stride << ",\n"
+        << "  \"photon_path_sample_max_rows_per_photon\":" << config.photon_path_sample_max_rows_per_photon << ",\n"
+        << "  \"photon_path_sampling_output_format\":\"" << config.photon_path_sampling_output_format << "\",\n"
+        << "  \"photon_path_sampling_require_validation\":" << (config.photon_path_sampling_require_validation ? "true" : "false") << ",\n"
         << "  \"momentum_input_mode\":\"per_record_required\",\n"
         << "  \"momentum_input_mode_allowed_values\":[\"zamo_tetrad\",\"global_boyer_lindquist\",\"covariant_p_mu\"],\n"
         << "  \"observer_crossing_interpolation\":\"fractional RK crossing state; classification only, not detection\",\n"
@@ -804,8 +1306,15 @@ PhotonEscapeSummary run_photon_escape_classifier(
     }
     std::ofstream output(output_jsonl);
     ensure_output(output, output_jsonl);
+    std::ofstream path_output;
+    if (config.enable_photon_path_sampling) {
+        path_output.open(config.path_samples_jsonl);
+        ensure_output(path_output, config.path_samples_jsonl);
+    }
 
     PhotonEscapeSummary summary;
+    PathSamplingSummary path_summary;
+    std::vector<PathPerPhotonSummary> path_per_photon_summary;
     std::string line;
     while (std::getline(input, line)) {
         if (line.empty()) {
@@ -818,13 +1327,28 @@ PhotonEscapeSummary run_photon_escape_classifier(
             continue;
         }
         ++summary.n_photons;
-        PhotonResult result = classify_photon(record, config);
+        record.photon_path_id = static_cast<long long>(summary.n_photons);
+        PhotonPath path;
+        PhotonResult result = classify_photon(record, config, config.enable_photon_path_sampling ? &path : nullptr);
         update_summary(summary, result);
         write_result(output, result);
+        if (should_write_path_samples(config, result, path)) {
+            for (const PathSample& sample : path.samples) {
+                write_path_sample(path_output, sample);
+            }
+            PathPerPhotonSummary per_photon = make_path_per_photon_summary(result, path);
+            update_path_summary(path_summary, result, path, per_photon);
+            path_per_photon_summary.push_back(per_photon);
+        }
     }
 
     write_summary_csv(summary_csv, summary);
     write_summary_md(summary_md, summary);
     write_provenance(provenance_json, config, summary);
+    if (config.enable_photon_path_sampling) {
+        write_path_summary_csv(config.path_samples_summary_csv, path_summary);
+        write_path_per_photon_summary_csv(config.path_samples_per_photon_summary_csv, path_per_photon_summary);
+        write_path_provenance(config.path_samples_provenance, config, path_summary);
+    }
     return summary;
 }

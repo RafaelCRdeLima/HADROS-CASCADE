@@ -98,10 +98,25 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "enable_photon_validation_gate",
         "enable_photon_observer_science_products",
         "photon_observer_science_require_validation",
+        "enable_photon_observer_spectra",
+        "photon_spectrum_selection",
+        "photon_spectrum_binning",
+        "photon_spectrum_n_bins",
+        "photon_spectrum_energy_min_gev",
+        "photon_spectrum_energy_max_gev",
+        "photon_spectrum_generate_plots",
+        "photon_spectrum_include_frequency",
+        "photon_spectrum_require_validation",
         "enable_photon_opacity",
         "photon_opacity_mode",
+        "photon_constant_alpha_per_rg",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
+        "enable_photon_path_sampling",
+        "photon_path_sample_stride",
+        "photon_path_sample_max_rows_per_photon",
+        "photon_path_sampling_output_format",
+        "photon_path_sampling_require_validation",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -136,15 +151,23 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
     as_bool(values["enable_photon_validation_gate"])
     as_bool(values["enable_photon_observer_science_products"])
     as_bool(values["photon_observer_science_require_validation"])
+    as_bool(values["enable_photon_observer_spectra"])
+    as_bool(values["photon_spectrum_generate_plots"])
+    as_bool(values["photon_spectrum_include_frequency"])
+    as_bool(values["photon_spectrum_require_validation"])
     as_bool(values["enable_photon_opacity"])
     as_bool(values["photon_opacity_fail_on_invalid"])
-    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum"}:
-        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled' or 'vacuum'")
+    as_bool(values["enable_photon_path_sampling"])
+    as_bool(values["photon_path_sampling_require_validation"])
+    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum", "constant_alpha_path"}:
+        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled', 'vacuum', or 'constant_alpha_path'")
+    if not math.isfinite(float(values["photon_constant_alpha_per_rg"])) or float(values["photon_constant_alpha_per_rg"]) < 0.0:
+        raise ValueError("photon_constant_alpha_per_rg must be finite and non-negative")
     if str(values["photon_opacity_output_mode"]) != "separate_file":
         raise ValueError("photon_opacity_output_mode must be separate_file")
     if as_bool(values["enable_photon_opacity"]):
-        if str(values["photon_opacity_mode"]) != "vacuum":
-            raise ValueError("enable_photon_opacity currently requires photon_opacity_mode='vacuum'")
+        if str(values["photon_opacity_mode"]) == "disabled":
+            raise ValueError("enable_photon_opacity requires photon_opacity_mode != 'disabled'")
         if str(values["photon_observer_mode"]) != "observer_camera_projection":
             raise ValueError("enable_photon_opacity requires photon_observer_mode='observer_camera_projection'")
         if str(values["photon_redshift_mode"]) != "validated_zamo":
@@ -158,6 +181,23 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("enable_photon_observer_science_products requires photon_redshift_mode='validated_zamo'")
         if not as_bool(values["enable_photon_validation_gate"]):
             raise ValueError("photon observer science products require enable_photon_validation_gate=true")
+    if as_bool(values["enable_photon_observer_spectra"]):
+        if str(values["photon_observer_mode"]) != "observer_camera_projection":
+            raise ValueError("enable_photon_observer_spectra requires photon_observer_mode='observer_camera_projection'")
+        if str(values["photon_redshift_mode"]) != "validated_zamo":
+            raise ValueError("enable_photon_observer_spectra requires photon_redshift_mode='validated_zamo'")
+        if not as_bool(values["enable_photon_validation_gate"]):
+            raise ValueError("photon observer spectra require enable_photon_validation_gate=true")
+    if str(values["photon_spectrum_selection"]) not in {"inside_fov_only", "all_reached_observer_sphere"}:
+        raise ValueError("Unsupported photon_spectrum_selection")
+    if str(values["photon_spectrum_binning"]) not in {"log", "linear"}:
+        raise ValueError("Unsupported photon_spectrum_binning")
+    if int(values["photon_spectrum_n_bins"]) <= 0:
+        raise ValueError("photon_spectrum_n_bins must be > 0")
+    for key in ["photon_spectrum_energy_min_gev", "photon_spectrum_energy_max_gev"]:
+        if str(values[key]) != "auto":
+            if not math.isfinite(float(values[key])) or float(values[key]) <= 0.0:
+                raise ValueError(f"{key} must be positive or auto")
     if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
         raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
     if str(values["photon_camera_projection_mode"]) != "gnomonic_pinhole":
@@ -186,6 +226,12 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("photon_geodesic_step_rg must be > 0")
     if int(values["photon_max_geodesic_steps"]) <= 0:
         raise ValueError("photon_max_geodesic_steps must be > 0")
+    if int(values["photon_path_sample_stride"]) <= 0:
+        raise ValueError("photon_path_sample_stride must be > 0")
+    if int(values["photon_path_sample_max_rows_per_photon"]) <= 0:
+        raise ValueError("photon_path_sample_max_rows_per_photon must be > 0")
+    if str(values["photon_path_sampling_output_format"]) != "jsonl":
+        raise ValueError("photon_path_sampling_output_format must be jsonl")
     return values
 
 
@@ -331,10 +377,25 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "enable_photon_validation_gate": as_bool(photon["enable_photon_validation_gate"]),
         "enable_photon_observer_science_products": as_bool(photon["enable_photon_observer_science_products"]),
         "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
+        "enable_photon_observer_spectra": as_bool(photon["enable_photon_observer_spectra"]),
+        "photon_spectrum_selection": photon["photon_spectrum_selection"],
+        "photon_spectrum_binning": photon["photon_spectrum_binning"],
+        "photon_spectrum_n_bins": int(photon["photon_spectrum_n_bins"]),
+        "photon_spectrum_energy_min_gev": photon["photon_spectrum_energy_min_gev"],
+        "photon_spectrum_energy_max_gev": photon["photon_spectrum_energy_max_gev"],
+        "photon_spectrum_generate_plots": as_bool(photon["photon_spectrum_generate_plots"]),
+        "photon_spectrum_include_frequency": as_bool(photon["photon_spectrum_include_frequency"]),
+        "photon_spectrum_require_validation": as_bool(photon["photon_spectrum_require_validation"]),
         "enable_photon_opacity": as_bool(photon["enable_photon_opacity"]),
         "photon_opacity_mode": photon["photon_opacity_mode"],
+        "photon_constant_alpha_per_rg": float(photon["photon_constant_alpha_per_rg"]),
         "photon_opacity_fail_on_invalid": as_bool(photon["photon_opacity_fail_on_invalid"]),
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
+        "enable_photon_path_sampling": as_bool(photon["enable_photon_path_sampling"]),
+        "photon_path_sample_stride": int(photon["photon_path_sample_stride"]),
+        "photon_path_sample_max_rows_per_photon": int(photon["photon_path_sample_max_rows_per_photon"]),
+        "photon_path_sampling_output_format": photon["photon_path_sampling_output_format"],
+        "photon_path_sampling_require_validation": as_bool(photon["photon_path_sampling_require_validation"]),
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -387,16 +448,32 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             and as_bool(photon["enable_photon_observer_science_products"])
         ),
         "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
+        "photon_observer_spectra_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and photon_mode == "observer_camera_projection"
+            and str(photon["photon_redshift_mode"]) == "validated_zamo"
+            and as_bool(photon["enable_photon_validation_gate"])
+            and as_bool(photon["enable_photon_observer_spectra"])
+        ),
+        "photon_spectrum_selection": photon["photon_spectrum_selection"],
+        "photon_spectrum_binning": photon["photon_spectrum_binning"],
+        "photon_spectrum_n_bins": int(photon["photon_spectrum_n_bins"]),
         "photon_opacity_enabled_effective": (
             as_bool(photon["enable_photon_observer_camera"])
             and photon_mode == "observer_camera_projection"
             and str(photon["photon_redshift_mode"]) == "validated_zamo"
             and as_bool(photon["enable_photon_validation_gate"])
             and as_bool(photon["enable_photon_opacity"])
-            and str(photon["photon_opacity_mode"]) == "vacuum"
+            and str(photon["photon_opacity_mode"]) in {"vacuum", "constant_alpha_path"}
         ),
         "photon_opacity_mode": photon["photon_opacity_mode"],
+        "photon_constant_alpha_per_rg": float(photon["photon_constant_alpha_per_rg"]),
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
+        "photon_path_sampling_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and as_bool(photon["enable_photon_path_sampling"])
+        ),
+        "photon_path_sampling_output_format": photon["photon_path_sampling_output_format"],
         "photon_absorption_applied": False,
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
@@ -634,6 +711,19 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
     if as_bool(photon["enable_photon_observer_camera"]):
         photon_mode = str(photon["photon_observer_mode"])
         fail_on_invariant = "true" if as_bool(photon["photon_fail_on_invariant_violation"]) else "false"
+        path_sampling_enabled = as_bool(photon["enable_photon_path_sampling"])
+        photon_escape_expected = [
+            cascade / "photon_escape_classifier.jsonl",
+            cascade / "photon_escape_summary.csv",
+            cascade / "photon_escape_provenance.json",
+        ]
+        if path_sampling_enabled:
+            photon_escape_expected.extend([
+                cascade / "photon_observer_geodesic_path_samples.jsonl",
+                cascade / "photon_observer_geodesic_path_samples_summary.csv",
+                cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv",
+                cascade / "photon_observer_geodesic_path_samples_provenance.json",
+            ])
         steps.append(
             FinalStep(
                 "build_photon_escape_classifier",
@@ -657,6 +747,14 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     str(cascade / "photon_escape_summary.md"),
                     "--provenance",
                     str(cascade / "photon_escape_provenance.json"),
+                    "--path-samples-jsonl",
+                    str(cascade / "photon_observer_geodesic_path_samples.jsonl"),
+                    "--path-samples-summary-csv",
+                    str(cascade / "photon_observer_geodesic_path_samples_summary.csv"),
+                    "--path-samples-per-photon-summary-csv",
+                    str(cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv"),
+                    "--path-samples-provenance",
+                    str(cascade / "photon_observer_geodesic_path_samples_provenance.json"),
                     "--backend",
                     "build/compute_kerr_photon_escape_classifier",
                     "--spin",
@@ -683,12 +781,18 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     str(photon["photon_min_energy_gev"]),
                     "--photon-observer-frame",
                     str(photon["photon_observer_frame"]),
+                    "--enable-photon-path-sampling",
+                    "true" if path_sampling_enabled else "false",
+                    "--photon-path-sample-stride",
+                    str(int(photon["photon_path_sample_stride"])),
+                    "--photon-path-sample-max-rows-per-photon",
+                    str(int(photon["photon_path_sample_max_rows_per_photon"])),
+                    "--photon-path-sampling-output-format",
+                    str(photon["photon_path_sampling_output_format"]),
+                    "--photon-path-sampling-require-validation",
+                    "true" if as_bool(photon["photon_path_sampling_require_validation"]) else "false",
                 ],
-                [
-                    cascade / "photon_escape_classifier.jsonl",
-                    cascade / "photon_escape_summary.csv",
-                    cascade / "photon_escape_provenance.json",
-                ],
+                photon_escape_expected,
                 allow_empty_outputs=(cascade / "photon_escape_classifier.jsonl",),
             )
         )
@@ -849,10 +953,12 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                             ],
                         )
                     )
-                if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) == "vacuum":
+                attenuated_opacity_modes = {"vacuum", "constant_alpha_path"}
+                opacity_mode = str(photon["photon_opacity_mode"])
+                if as_bool(photon["enable_photon_opacity"]) and opacity_mode in attenuated_opacity_modes:
                     steps.append(
                         FinalStep(
-                            "photon_observer_opacity_vacuum",
+                            f"photon_observer_opacity_{opacity_mode}",
                             [
                                 sys.executable,
                                 "scripts/science/build_photon_observer_opacity.py",
@@ -866,8 +972,12 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                                 str(cascade / "photon_observer_opacity_provenance.json"),
                                 "--pipeline-config",
                                 str(science_config),
+                                "--path-summary-csv",
+                                str(cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv"),
                                 "--photon-opacity-mode",
                                 str(photon["photon_opacity_mode"]),
+                                "--photon-constant-alpha-per-rg",
+                                str(photon["photon_constant_alpha_per_rg"]),
                                 "--photon-opacity-fail-on-invalid",
                                 "true" if as_bool(photon["photon_opacity_fail_on_invalid"]) else "false",
                                 "--photon-opacity-output-mode",
@@ -899,7 +1009,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                         "--camera-ny",
                         str(config["camera_ny"]),
                     ]
-                    if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) == "vacuum":
+                    if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) in attenuated_opacity_modes:
                         science_command.extend(
                             [
                                 "--attenuated-csv",
@@ -916,6 +1026,71 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                                 cascade / "photon_observer_science_products" / "photon_observer_counts_map.csv",
                                 cascade / "photon_observer_science_products" / "photon_observer_observed_energy_map.csv",
                             ],
+                        )
+                    )
+                if as_bool(photon["enable_photon_observer_spectra"]):
+                    spectra_command = [
+                        sys.executable,
+                        "scripts/science/build_photon_observer_spectra.py",
+                        "--redshift-csv",
+                        str(cascade / "photon_observer_camera_redshift.csv"),
+                        "--validation-summary-csv",
+                        str(cascade / "photon_observer_camera_validation_summary.csv"),
+                        "--validation-provenance",
+                        str(cascade / "photon_observer_camera_validation_provenance.json"),
+                        "--output-dir",
+                        str(cascade / "photon_observer_spectra"),
+                        "--pipeline-config",
+                        str(science_config),
+                        "--photon-spectrum-selection",
+                        str(photon["photon_spectrum_selection"]),
+                        "--photon-spectrum-binning",
+                        str(photon["photon_spectrum_binning"]),
+                        "--photon-spectrum-n-bins",
+                        str(int(photon["photon_spectrum_n_bins"])),
+                        "--photon-spectrum-energy-min-gev",
+                        str(photon["photon_spectrum_energy_min_gev"]),
+                        "--photon-spectrum-energy-max-gev",
+                        str(photon["photon_spectrum_energy_max_gev"]),
+                        "--photon-spectrum-generate-plots",
+                        "true" if as_bool(photon["photon_spectrum_generate_plots"]) else "false",
+                        "--photon-spectrum-include-frequency",
+                        "true" if as_bool(photon["photon_spectrum_include_frequency"]) else "false",
+                        "--photon-spectrum-require-validation",
+                        "true" if as_bool(photon["photon_spectrum_require_validation"]) else "false",
+                    ]
+                    if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) in attenuated_opacity_modes:
+                        spectra_command.extend(
+                            [
+                                "--attenuated-csv",
+                                str(cascade / "photon_observer_camera_attenuated.csv"),
+                            ]
+                        )
+                    spectra_outputs = [
+                        cascade / "photon_observer_spectra" / "photon_observer_spectrum_observed.csv",
+                        cascade / "photon_observer_spectra" / "photon_observer_spectrum_input.csv",
+                        cascade / "photon_observer_spectra" / "photon_observer_spectra_summary.md",
+                        cascade / "photon_observer_spectra" / "photon_observer_spectra_provenance.json",
+                    ]
+                    if as_bool(photon["photon_spectrum_include_frequency"]):
+                        spectra_outputs.append(cascade / "photon_observer_spectra" / "photon_observer_spectrum_frequency.csv")
+                    if as_bool(photon["photon_spectrum_generate_plots"]):
+                        spectra_outputs.extend(
+                            [
+                                cascade / "photon_observer_spectra" / "photon_observer_spectrum_observed_counts.png",
+                                cascade / "photon_observer_spectra" / "photon_observer_spectrum_observed_E2dNdE.png",
+                                cascade / "photon_observer_spectra" / "photon_observer_spectrum_input_vs_observed.png",
+                            ]
+                        )
+                        if as_bool(photon["photon_spectrum_include_frequency"]):
+                            spectra_outputs.append(cascade / "photon_observer_spectra" / "photon_observer_spectrum_frequency_counts.png")
+                    if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) in attenuated_opacity_modes:
+                        spectra_outputs.append(cascade / "photon_observer_spectra" / "photon_observer_spectrum_attenuated.csv")
+                    steps.append(
+                        FinalStep(
+                            "photon_observer_spectra",
+                            spectra_command,
+                            spectra_outputs,
                         )
                     )
     if mode == "uhe_cascade":

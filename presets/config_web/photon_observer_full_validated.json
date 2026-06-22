@@ -13,6 +13,7 @@
     "enable_photon_observer_spectra": true,
     "enable_photon_opacity": true,
     "photon_opacity_mode": "vacuum",
+    "photon_constant_alpha_per_rg": 0.0,
     "photon_opacity_output_mode": "separate_file",
     "enable_photon_path_sampling": false
   }

@@ -90,6 +90,10 @@ def classifier_command(
     invariant_tolerance: str = "1e-6",
     horizon_tolerance: str = "1e-6",
     fail_on_invariant: str = "true",
+    enable_path_sampling: str = "false",
+    path_sample_stride: str = "1",
+    path_sample_max_rows_per_photon: str = "10000",
+    path_sampling_require_validation: str = "true",
 ) -> tuple[list[str], Path, Path, Path]:
     tmp.mkdir(parents=True, exist_ok=True)
     input_path = tmp / "geant4_ready_particles.jsonl"
@@ -97,6 +101,10 @@ def classifier_command(
     summary_csv = tmp / "photon_escape_summary.csv"
     summary_md = tmp / "photon_escape_summary.md"
     provenance = tmp / "photon_escape_provenance.json"
+    path_samples = tmp / "photon_observer_geodesic_path_samples.jsonl"
+    path_samples_summary = tmp / "photon_observer_geodesic_path_samples_summary.csv"
+    path_samples_per_photon_summary = tmp / "photon_observer_geodesic_path_samples_per_photon_summary.csv"
+    path_samples_provenance = tmp / "photon_observer_geodesic_path_samples_provenance.json"
     input_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
     cmd = [
         sys.executable,
@@ -106,6 +114,10 @@ def classifier_command(
         "--summary-csv", str(summary_csv),
         "--summary-md", str(summary_md),
         "--provenance", str(provenance),
+        "--path-samples-jsonl", str(path_samples),
+        "--path-samples-summary-csv", str(path_samples_summary),
+        "--path-samples-per-photon-summary-csv", str(path_samples_per_photon_summary),
+        "--path-samples-provenance", str(path_samples_provenance),
         "--backend", str(binary),
         "--spin", "0.0",
         "--observer-radius-rg", "20.0",
@@ -119,6 +131,11 @@ def classifier_command(
         "--photon-fail-on-invariant-violation", fail_on_invariant,
         "--photon-min-energy-gev", "0.0",
         "--photon-observer-frame", "ZAMO",
+        "--enable-photon-path-sampling", enable_path_sampling,
+        "--photon-path-sample-stride", path_sample_stride,
+        "--photon-path-sample-max-rows-per-photon", path_sample_max_rows_per_photon,
+        "--photon-path-sampling-output-format", "jsonl",
+        "--photon-path-sampling-require-validation", path_sampling_require_validation,
     ]
     return cmd, output_jsonl, summary_csv, provenance
 
@@ -197,6 +214,144 @@ def test_radial_outward_reaches_observer(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"crossing momentum was not marked available: {out_rows[0]}")
     if "observed_energy_gev" in out_rows[0]:
         raise AssertionError(f"Phase 1 unexpectedly emitted observed_energy_gev: {out_rows[0]}")
+
+
+def test_path_sampling_disabled_creates_no_outputs(binary: Path, tmp: Path) -> None:
+    cmd, _, _, _ = classifier_command(tmp, binary, [photon_row()])
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    for name in [
+        "photon_observer_geodesic_path_samples.jsonl",
+        "photon_observer_geodesic_path_samples_summary.csv",
+        "photon_observer_geodesic_path_samples_per_photon_summary.csv",
+        "photon_observer_geodesic_path_samples_provenance.json",
+    ]:
+        if (tmp / name).exists():
+            raise AssertionError(f"path sampling disabled unexpectedly created {name}")
+
+
+def test_path_sampling_enabled_records_geometric_samples(binary: Path, tmp: Path) -> None:
+    cmd, output_jsonl, _, _ = classifier_command(
+        tmp,
+        binary,
+        [photon_row()],
+        enable_path_sampling="true",
+    )
+    subprocess.run(cmd, cwd=ROOT, check=True)
+
+    samples_path = tmp / "photon_observer_geodesic_path_samples.jsonl"
+    summary_path = tmp / "photon_observer_geodesic_path_samples_summary.csv"
+    per_photon_summary_path = tmp / "photon_observer_geodesic_path_samples_per_photon_summary.csv"
+    provenance_path = tmp / "photon_observer_geodesic_path_samples_provenance.json"
+    if not samples_path.exists() or not summary_path.exists() or not per_photon_summary_path.exists() or not provenance_path.exists():
+        raise AssertionError("path sampling did not create JSONL, aggregate summary, per-photon summary, and provenance outputs")
+
+    result = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    samples = [json.loads(line) for line in samples_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(samples) < 2:
+        raise AssertionError(f"expected multiple path samples, got {samples}")
+    if "photon_path_id" not in result:
+        raise AssertionError(f"Phase 1 result missing photon_path_id: {result}")
+    if any(sample.get("photon_path_id") != result["photon_path_id"] for sample in samples):
+        raise AssertionError(f"path samples did not preserve photon_path_id: {samples[:3]}, {result}")
+    indices = [int(sample["sample_index"]) for sample in samples]
+    if indices != list(range(len(samples))):
+        raise AssertionError(f"sample_index did not grow monotonically from zero: {indices}")
+    forbidden = {
+        "rho", "medium_rho", "temperature", "medium_temperature", "Ye", "medium_Ye",
+        "u_fluid_t", "E_gamma_fluid", "alpha_gamma", "tau", "survival",
+    }
+    for sample in samples:
+        if float(sample["dl_rg"]) < 0.0:
+            raise AssertionError(f"negative dl_rg in path sample: {sample}")
+        for field in ["null_norm_abs", "E_killing", "Lz"]:
+            if field not in sample:
+                raise AssertionError(f"path sample missing {field}: {sample}")
+        if forbidden.intersection(sample):
+            raise AssertionError(f"path sample contains medium/opacity fields: {sample}")
+    final = samples[-1]
+    if final["observer_crossing_reached"] is not True:
+        raise AssertionError(f"final path sample did not mark observer crossing: {final}")
+    if abs(float(final["r_rg"]) - float(result["observer_crossing_r_rg"])) > 1.0e-8:
+        raise AssertionError(f"final path sample is not at observer crossing: {final}, {result}")
+    for sample_field, result_field in [
+        ("p_t", "p_t_crossing"),
+        ("p_r", "p_r_crossing"),
+        ("p_theta", "p_theta_crossing"),
+        ("p_phi", "p_phi_crossing"),
+    ]:
+        if abs(float(final[sample_field]) - float(result[result_field])) > 1.0e-10:
+            raise AssertionError(f"final path momentum differs from crossing momentum: {sample_field}")
+
+    with summary_path.open("r", encoding="utf-8", newline="") as handle:
+        summary = next(csv.DictReader(handle))
+    if int(summary["n_photons_with_paths"]) != 1 or int(summary["n_total_samples"]) != len(samples):
+        raise AssertionError(f"bad path sampling summary: {summary}")
+    if int(summary["n_photons_with_per_photon_summary"]) != 1:
+        raise AssertionError(f"aggregate summary did not count per-photon rows: {summary}")
+    if int(summary["n_final_p_mu_mismatch"]) != 0:
+        raise AssertionError(f"aggregate summary found final p_mu mismatch: {summary}")
+    if float(summary["max_crossing_r_error_rg"]) > 1.0e-8:
+        raise AssertionError(f"aggregate summary crossing error too large: {summary}")
+    if float(summary["max_final_p_mu_error"]) > 1.0e-10:
+        raise AssertionError(f"aggregate summary final p_mu error too large: {summary}")
+    if float(summary["total_path_length_rg_mean"]) <= 0.0:
+        raise AssertionError(f"path length was not finite and positive: {summary}")
+    with per_photon_summary_path.open("r", encoding="utf-8", newline="") as handle:
+        per_photon_rows = list(csv.DictReader(handle))
+    if len(per_photon_rows) != 1:
+        raise AssertionError(f"expected one per-photon summary row: {per_photon_rows}")
+    per_photon = per_photon_rows[0]
+    if int(per_photon["photon_path_id"]) != int(result["photon_path_id"]):
+        raise AssertionError(f"per-photon summary did not preserve photon_path_id: {per_photon}, {result}")
+    if int(per_photon["n_samples"]) != len(samples):
+        raise AssertionError(f"per-photon n_samples mismatch: {per_photon}")
+    if per_photon["observer_crossing_reached"] != "true":
+        raise AssertionError(f"per-photon row did not mark crossing: {per_photon}")
+    if per_photon["final_p_mu_matches_crossing"] != "true":
+        raise AssertionError(f"per-photon final p_mu did not match crossing: {per_photon}")
+    if per_photon["truncated"] != "false" or per_photon["truncation_status"] != "complete":
+        raise AssertionError(f"bad per-photon truncation status: {per_photon}")
+    if float(per_photon["total_path_length_rg"]) <= 0.0:
+        raise AssertionError(f"bad per-photon path length: {per_photon}")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if provenance.get("phase") != "photon_geodesic_path_sampling":
+        raise AssertionError(f"bad path sampling provenance phase: {provenance}")
+    if provenance.get("dl_method") != "spatial_kerr_metric_midpoint":
+        raise AssertionError(f"bad dl_method: {provenance}")
+    if provenance.get("per_photon_summary_available") is not True:
+        raise AssertionError(f"per-photon summary not declared: {provenance}")
+    if provenance.get("requires_stride_1_for_physical_opacity") is not True:
+        raise AssertionError(f"stride=1 requirement not declared: {provenance}")
+    if provenance.get("recommended_for_tabulated_gray_path") is not True:
+        raise AssertionError(f"stride=1 recommendation should be true in this test: {provenance}")
+    if provenance.get("no_medium_lookup") is not True or provenance.get("no_opacity_applied") is not True:
+        raise AssertionError(f"path sampling provenance suggests medium/opacity was applied: {provenance}")
+
+
+def test_path_sampling_truncation_recorded(binary: Path, tmp: Path) -> None:
+    cmd, _, _, _ = classifier_command(
+        tmp,
+        binary,
+        [photon_row()],
+        enable_path_sampling="true",
+        path_sample_max_rows_per_photon="1",
+    )
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    with (tmp / "photon_observer_geodesic_path_samples_summary.csv").open("r", encoding="utf-8", newline="") as handle:
+        summary = next(csv.DictReader(handle))
+    if int(summary["n_truncated_paths"]) != 1:
+        raise AssertionError(f"path truncation was not recorded: {summary}")
+    samples = [
+        json.loads(line)
+        for line in (tmp / "photon_observer_geodesic_path_samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(samples) != 1:
+        raise AssertionError(f"truncated path exceeded max rows per photon: {samples}")
+    with (tmp / "photon_observer_geodesic_path_samples_per_photon_summary.csv").open("r", encoding="utf-8", newline="") as handle:
+        per_photon = next(csv.DictReader(handle))
+    if per_photon["truncated"] != "true" or per_photon["truncation_status"] != "truncated_max_rows_per_photon":
+        raise AssertionError(f"per-photon truncation status was not recorded: {per_photon}")
 
 
 def test_radial_inward_captured(binary: Path, tmp: Path) -> None:
@@ -299,10 +454,25 @@ def test_config_web_contains_all_parameters() -> None:
         "enable_photon_validation_gate",
         "enable_photon_observer_science_products",
         "photon_observer_science_require_validation",
+        "enable_photon_observer_spectra",
+        "photon_spectrum_selection",
+        "photon_spectrum_binning",
+        "photon_spectrum_n_bins",
+        "photon_spectrum_energy_min_gev",
+        "photon_spectrum_energy_max_gev",
+        "photon_spectrum_generate_plots",
+        "photon_spectrum_include_frequency",
+        "photon_spectrum_require_validation",
         "enable_photon_opacity",
         "photon_opacity_mode",
+        "photon_constant_alpha_per_rg",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
+        "enable_photon_path_sampling",
+        "photon_path_sample_stride",
+        "photon_path_sample_max_rows_per_photon",
+        "photon_path_sampling_output_format",
+        "photon_path_sampling_require_validation",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -356,10 +526,25 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "enable_photon_validation_gate": True,
         "enable_photon_observer_science_products": False,
         "photon_observer_science_require_validation": True,
+        "enable_photon_observer_spectra": False,
+        "photon_spectrum_selection": "inside_fov_only",
+        "photon_spectrum_binning": "log",
+        "photon_spectrum_n_bins": 32,
+        "photon_spectrum_energy_min_gev": "auto",
+        "photon_spectrum_energy_max_gev": "auto",
+        "photon_spectrum_generate_plots": True,
+        "photon_spectrum_include_frequency": True,
+        "photon_spectrum_require_validation": True,
         "enable_photon_opacity": False,
         "photon_opacity_mode": "disabled",
+        "photon_constant_alpha_per_rg": 0.0,
         "photon_opacity_fail_on_invalid": True,
         "photon_opacity_output_mode": "separate_file",
+        "enable_photon_path_sampling": True,
+        "photon_path_sample_stride": 3,
+        "photon_path_sample_max_rows_per_photon": 17,
+        "photon_path_sampling_output_format": "jsonl",
+        "photon_path_sampling_require_validation": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -379,6 +564,11 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "--photon-observer-crossing-tolerance-rg": "1e-08",
         "--photon-observer-frame": "ZAMO",
         "--photon-fail-on-invariant-violation": "true",
+        "--enable-photon-path-sampling": "true",
+        "--photon-path-sample-stride": "3",
+        "--photon-path-sample-max-rows-per-photon": "17",
+        "--photon-path-sampling-output-format": "jsonl",
+        "--photon-path-sampling-require-validation": "true",
     }
     for flag, value in expected_pairs.items():
         if flag not in command or command[command.index(flag) + 1] != value:
@@ -389,6 +579,14 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         raise AssertionError(f"pipeline provenance missing photon interpretation: {provenance}")
     if provenance.get("photon_projected_to_pixels") is not False:
         raise AssertionError(f"pipeline provenance must record projected_to_pixels=false: {provenance}")
+    for expected in [
+        "photon_observer_geodesic_path_samples.jsonl",
+        "photon_observer_geodesic_path_samples_summary.csv",
+        "photon_observer_geodesic_path_samples_per_photon_summary.csv",
+        "photon_observer_geodesic_path_samples_provenance.json",
+    ]:
+        if not any(expected in str(path) for path in step.required_outputs):
+            raise AssertionError(f"pipeline did not expect path sampling output {expected}: {step.required_outputs}")
 
 
 def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) -> None:
@@ -430,10 +628,25 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "enable_photon_validation_gate": True,
         "enable_photon_observer_science_products": False,
         "photon_observer_science_require_validation": True,
+        "enable_photon_observer_spectra": False,
+        "photon_spectrum_selection": "inside_fov_only",
+        "photon_spectrum_binning": "log",
+        "photon_spectrum_n_bins": 32,
+        "photon_spectrum_energy_min_gev": "auto",
+        "photon_spectrum_energy_max_gev": "auto",
+        "photon_spectrum_generate_plots": True,
+        "photon_spectrum_include_frequency": True,
+        "photon_spectrum_require_validation": True,
         "enable_photon_opacity": False,
         "photon_opacity_mode": "disabled",
+        "photon_constant_alpha_per_rg": 0.0,
         "photon_opacity_fail_on_invalid": True,
         "photon_opacity_output_mode": "separate_file",
+        "enable_photon_path_sampling": False,
+        "photon_path_sample_stride": 1,
+        "photon_path_sample_max_rows_per_photon": 10000,
+        "photon_path_sampling_output_format": "jsonl",
+        "photon_path_sampling_require_validation": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -505,10 +718,25 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "enable_photon_validation_gate": True,
         "enable_photon_observer_science_products": False,
         "photon_observer_science_require_validation": True,
+        "enable_photon_observer_spectra": False,
+        "photon_spectrum_selection": "inside_fov_only",
+        "photon_spectrum_binning": "log",
+        "photon_spectrum_n_bins": 32,
+        "photon_spectrum_energy_min_gev": "auto",
+        "photon_spectrum_energy_max_gev": "auto",
+        "photon_spectrum_generate_plots": True,
+        "photon_spectrum_include_frequency": True,
+        "photon_spectrum_require_validation": True,
         "enable_photon_opacity": False,
         "photon_opacity_mode": "disabled",
+        "photon_constant_alpha_per_rg": 0.0,
         "photon_opacity_fail_on_invalid": True,
         "photon_opacity_output_mode": "separate_file",
+        "enable_photon_path_sampling": False,
+        "photon_path_sample_stride": 1,
+        "photon_path_sample_max_rows_per_photon": 10000,
+        "photon_path_sampling_output_format": "jsonl",
+        "photon_path_sampling_require_validation": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -593,10 +821,25 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
         "enable_photon_validation_gate": True,
         "enable_photon_observer_science_products": False,
         "photon_observer_science_require_validation": True,
+        "enable_photon_observer_spectra": False,
+        "photon_spectrum_selection": "inside_fov_only",
+        "photon_spectrum_binning": "log",
+        "photon_spectrum_n_bins": 32,
+        "photon_spectrum_energy_min_gev": "auto",
+        "photon_spectrum_energy_max_gev": "auto",
+        "photon_spectrum_generate_plots": True,
+        "photon_spectrum_include_frequency": True,
+        "photon_spectrum_require_validation": True,
         "enable_photon_opacity": False,
         "photon_opacity_mode": "disabled",
+        "photon_constant_alpha_per_rg": 0.0,
         "photon_opacity_fail_on_invalid": True,
         "photon_opacity_output_mode": "separate_file",
+        "enable_photon_path_sampling": False,
+        "photon_path_sample_stride": 1,
+        "photon_path_sample_max_rows_per_photon": 10000,
+        "photon_path_sampling_output_format": "jsonl",
+        "photon_path_sampling_require_validation": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -672,10 +915,25 @@ def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) ->
         "enable_photon_validation_gate": True,
         "enable_photon_observer_science_products": False,
         "photon_observer_science_require_validation": True,
+        "enable_photon_observer_spectra": False,
+        "photon_spectrum_selection": "inside_fov_only",
+        "photon_spectrum_binning": "log",
+        "photon_spectrum_n_bins": 32,
+        "photon_spectrum_energy_min_gev": "auto",
+        "photon_spectrum_energy_max_gev": "auto",
+        "photon_spectrum_generate_plots": True,
+        "photon_spectrum_include_frequency": True,
+        "photon_spectrum_require_validation": True,
         "enable_photon_opacity": False,
         "photon_opacity_mode": "disabled",
+        "photon_constant_alpha_per_rg": 0.0,
         "photon_opacity_fail_on_invalid": True,
         "photon_opacity_output_mode": "separate_file",
+        "enable_photon_path_sampling": False,
+        "photon_path_sample_stride": 1,
+        "photon_path_sample_max_rows_per_photon": 10000,
+        "photon_path_sampling_output_format": "jsonl",
+        "photon_path_sampling_require_validation": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -706,6 +964,11 @@ def test_wrapper_has_no_physical_defaults() -> None:
         'parser.add_argument("--photon-horizon-crossing-tolerance-rg", default=',
         'parser.add_argument("--photon-observer-crossing-tolerance-rg", default=',
         'parser.add_argument("--photon-min-energy-gev", default=',
+        'parser.add_argument("--enable-photon-path-sampling", default=',
+        'parser.add_argument("--photon-path-sample-stride", default=',
+        'parser.add_argument("--photon-path-sample-max-rows-per-photon", default=',
+        'parser.add_argument("--photon-path-sampling-output-format", default=',
+        'parser.add_argument("--photon-path-sampling-require-validation", default=',
         'default="ZAMO"',
         'default="true"',
     ]
@@ -736,10 +999,25 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'config.get("enable_photon_validation_gate"',
         'config.get("enable_photon_observer_science_products"',
         'config.get("photon_observer_science_require_validation"',
+        'config.get("enable_photon_observer_spectra"',
+        'config.get("photon_spectrum_selection"',
+        'config.get("photon_spectrum_binning"',
+        'config.get("photon_spectrum_n_bins"',
+        'config.get("photon_spectrum_energy_min_gev"',
+        'config.get("photon_spectrum_energy_max_gev"',
+        'config.get("photon_spectrum_generate_plots"',
+        'config.get("photon_spectrum_include_frequency"',
+        'config.get("photon_spectrum_require_validation"',
         'config.get("enable_photon_opacity"',
         'config.get("photon_opacity_mode"',
+        'config.get("photon_constant_alpha_per_rg"',
         'config.get("photon_opacity_fail_on_invalid"',
         'config.get("photon_opacity_output_mode"',
+        'config.get("enable_photon_path_sampling"',
+        'config.get("photon_path_sample_stride"',
+        'config.get("photon_path_sample_max_rows_per_photon"',
+        'config.get("photon_path_sampling_output_format"',
+        'config.get("photon_path_sampling_require_validation"',
         'config.get("photon_camera_projection_mode"',
         'config.get("photon_camera_fov_deg"',
         'config.get("photon_camera_fov_definition"',
@@ -766,10 +1044,25 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'photon.get("enable_photon_validation_gate"',
         'photon.get("enable_photon_observer_science_products"',
         'photon.get("photon_observer_science_require_validation"',
+        'photon.get("enable_photon_observer_spectra"',
+        'photon.get("photon_spectrum_selection"',
+        'photon.get("photon_spectrum_binning"',
+        'photon.get("photon_spectrum_n_bins"',
+        'photon.get("photon_spectrum_energy_min_gev"',
+        'photon.get("photon_spectrum_energy_max_gev"',
+        'photon.get("photon_spectrum_generate_plots"',
+        'photon.get("photon_spectrum_include_frequency"',
+        'photon.get("photon_spectrum_require_validation"',
         'photon.get("enable_photon_opacity"',
         'photon.get("photon_opacity_mode"',
+        'photon.get("photon_constant_alpha_per_rg"',
         'photon.get("photon_opacity_fail_on_invalid"',
         'photon.get("photon_opacity_output_mode"',
+        'photon.get("enable_photon_path_sampling"',
+        'photon.get("photon_path_sample_stride"',
+        'photon.get("photon_path_sample_max_rows_per_photon"',
+        'photon.get("photon_path_sampling_output_format"',
+        'photon.get("photon_path_sampling_require_validation"',
         'photon.get("photon_camera_projection_mode"',
         'photon.get("photon_camera_fov_deg"',
         'photon.get("photon_camera_fov_definition"',

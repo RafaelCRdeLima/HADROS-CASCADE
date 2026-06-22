@@ -13,6 +13,7 @@ from typing import Any
 
 
 HIT_FIELDS = [
+    "photon_path_id",
     "event_id",
     "particle_id",
     "pdg",
@@ -22,6 +23,7 @@ HIT_FIELDS = [
     "observer_crossing_phi_rad",
     "observer_crossing_interpolated",
     "crossing_step_index",
+    "total_path_length_rg",
     "E_killing_initial",
     "E_killing_final",
     "Lz_initial",
@@ -103,6 +105,7 @@ def hit_from_row(row: dict[str, Any]) -> dict[str, Any]:
     if energy is None:
         raise ValueError(f"Phase 1 reached-observer row missing input energy field: {row}")
     hit = {
+        "photon_path_id": row.get("photon_path_id"),
         "event_id": row.get("event_id"),
         "particle_id": row.get("particle_id"),
         "pdg": int(row.get("pdg", 22)),
@@ -136,7 +139,8 @@ def hit_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "crossing_r_error_rg": as_float(row, "crossing_r_error_rg"),
         "crossing_null_norm_abs_error": as_float(row, "crossing_null_norm_abs_error"),
     }
-    missing = [key for key in HIT_FIELDS if hit.get(key) is None]
+    optional_fields = {"photon_path_id", "total_path_length_rg"}
+    missing = [key for key in HIT_FIELDS if key not in optional_fields and hit.get(key) is None]
     if missing:
         raise ValueError(f"Phase 1 reached-observer row missing required fields {missing}: {row}")
     return hit

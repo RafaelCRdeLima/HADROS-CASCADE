@@ -13,6 +13,7 @@ from typing import Any
 
 
 CAMERA_FIELDS = [
+    "photon_path_id",
     "event_id",
     "particle_id",
     "pdg",
@@ -28,6 +29,7 @@ CAMERA_FIELDS = [
     "observer_crossing_phi_rad",
     "observer_crossing_interpolated",
     "crossing_step_index",
+    "total_path_length_rg",
     "momentum_input_mode",
     "initial_r_rg",
     "initial_theta_rad",
@@ -204,6 +206,7 @@ def project_hit(
                 pixel_y = ny - 1
 
     return {
+        "photon_path_id": row.get("photon_path_id"),
         "event_id": row.get("event_id"),
         "particle_id": row.get("particle_id"),
         "pdg": int(row.get("pdg", 22)),
@@ -219,6 +222,7 @@ def project_hit(
         "observer_crossing_phi_rad": phi,
         "observer_crossing_interpolated": bool(row.get("observer_crossing_interpolated")),
         "crossing_step_index": int(row.get("crossing_step_index", -1)),
+        "total_path_length_rg": row.get("total_path_length_rg"),
         "momentum_input_mode": row.get("momentum_input_mode"),
         "initial_r_rg": require_float(row, "initial_r_rg"),
         "initial_theta_rad": require_float(row, "initial_theta_rad"),
