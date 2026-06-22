@@ -22,6 +22,10 @@ BLOCKED = "PARTICLE_RAY_ASSOCIATION_CAMERA_BLOCKED_BY_GLOBAL_POSITION"
 BLOCKED_ASSOCIATION = "PARTICLE_RAY_ASSOCIATION_CAMERA_BLOCKED_BY_ASSOCIATION_CRITERIA"
 PARTIAL = "PARTICLE_RAY_ASSOCIATION_CAMERA_PARTIAL_SAMPLED_INTERACTIONS"
 VALIDATED = "PARTICLE_RAY_ASSOCIATION_CAMERA_VALIDATED"
+REAL_PARTIAL = "REAL_HADROS_BACKWARD_KERR_CAMERA_PARTIAL_SAMPLED_INTERACTIONS"
+REAL_VALIDATED = "REAL_HADROS_BACKWARD_KERR_CAMERA_VALIDATED"
+VALIDATED_STATUSES = {VALIDATED, REAL_VALIDATED}
+PARTIAL_STATUSES = {PARTIAL, REAL_PARTIAL}
 
 
 def run_backend(args: argparse.Namespace, output_dir: Path, *, aspin: float | None = None, r_obs: float | None = None, r_max: float | None = None, step: float | None = None, theta: float | None = None, fov: float | None = None) -> tuple[int, dict[str, Any]]:
@@ -77,6 +81,14 @@ def validation_path(output_dir: Path, camera_naming_mode: str) -> Path:
     return fallback
 
 
+def camera_exit_code(status: str, backend_returncode: int) -> int:
+    if backend_returncode != 0:
+        return 2
+    if status in VALIDATED_STATUSES or status in PARTIAL_STATUSES:
+        return 0
+    return 2
+
+
 def write_sensitivity(args: argparse.Namespace) -> None:
     cases = [
         ("ASPIN", "0.0", {"aspin": 0.0}),
@@ -114,8 +126,8 @@ def write_sensitivity(args: argparse.Namespace) -> None:
                 "angular_tolerance_deg": validation.get("angular_tolerance_deg", ""),
                 "image_status": (
                     "SCIENTIFIC_IMAGE_PARTIAL_SAMPLED_INTERACTIONS"
-                    if validation.get("status") == PARTIAL
-                    else ("ASSOCIATION_CAMERA_VALIDATED" if validation.get("status") == VALIDATED else "NO_ASSOCIATION_CAMERA_ROWS")
+                    if validation.get("status") in PARTIAL_STATUSES
+                    else ("ASSOCIATION_CAMERA_VALIDATED" if validation.get("status") in VALIDATED_STATUSES else "NO_ASSOCIATION_CAMERA_ROWS")
                 ),
             }
         )
@@ -204,8 +216,8 @@ def write_blocked_maps(args: argparse.Namespace, status: str = BLOCKED) -> None:
     ]
     title = (
         "PARTIAL: local-to-global approximation"
-        if status == PARTIAL
-        else ("VALIDATED: particle-ray association" if status == VALIDATED else "BLOCKED: no accepted association")
+        if status in PARTIAL_STATUSES
+        else ("VALIDATED: particle-ray association" if status in VALIDATED_STATUSES else "BLOCKED: no accepted association")
     )
     for name in names:
         fig, ax = plt.subplots(figsize=(4.5, 3.8), constrained_layout=True)
@@ -267,10 +279,11 @@ def main() -> int:
     returncode, payload = run_backend(args, args.output_dir)
     write_sensitivity(args)
     write_wrapper_report(args, payload, returncode)
-    status = str(payload.get("status", BLOCKED))
+    validation = read_validation(validation_path(args.output_dir, args.camera_naming_mode))
+    status = str(validation.get("status", payload.get("status", BLOCKED)))
     write_blocked_maps(args, status)
     print(json.dumps({"status": status, "backend_returncode": returncode}, indent=2, sort_keys=True))
-    return 0 if status in {VALIDATED, PARTIAL} else 2
+    return camera_exit_code(status, returncode)
 
 
 if __name__ == "__main__":
