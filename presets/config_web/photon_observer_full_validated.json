@@ -14,7 +14,26 @@
     "enable_photon_opacity": true,
     "photon_opacity_mode": "vacuum",
     "photon_constant_alpha_per_rg": 0.0,
+    "photon_density_gray_kappa_per_rg_per_gcm3": 0.0,
+    "photon_density_gray_energy_exponent": 0.0,
+    "photon_density_gray_reference_energy_gev": 1.0,
+    "photon_opacity_truncated_path_policy": "fail",
     "photon_opacity_output_mode": "separate_file",
-    "enable_photon_path_sampling": false
+    "enable_photon_path_sampling": false,
+    "enable_photon_path_compression": false,
+    "photon_path_compression_mode": "none",
+    "photon_path_compression_stride": 16,
+    "photon_path_compression_require_complete_paths": true,
+    "photon_path_compression_output_format": "jsonl",
+    "photon_medium_model": "none",
+    "photon_medium_input_path_mode": "raw_samples",
+    "photon_medium_truncated_path_policy": "fail",
+    "photon_medium_torus_rho0_g_cm3": 1.0,
+    "photon_medium_torus_r0_rg": 50.0,
+    "photon_medium_torus_sigma_r_rg": 10.0,
+    "photon_medium_torus_H_over_r": 0.2,
+    "photon_medium_torus_temperature_mev": 1.0,
+    "photon_medium_torus_Ye": 0.5,
+    "photon_medium_torus_fluid_frame": "zamo"
   }
 }

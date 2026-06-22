@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build photon observer opacity products for disabled/vacuum/constant-alpha modes."""
+"""Build photon observer opacity products for validated toy/contract modes."""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ OPACITY_FIELDS = [
     "attenuated_observed_energy_gev",
     "opacity_integration_method",
     "photon_opacity_status",
+    "opacity_status",
+    "n_medium_segments_used",
+    "path_subset_status",
 ]
 
 SUMMARY_FIELDS = [
@@ -31,6 +34,8 @@ SUMMARY_FIELDS = [
     "n_input_photons",
     "n_opacity_valid",
     "n_opacity_invalid",
+    "n_paths_used",
+    "n_paths_excluded_truncated",
     "mean_tau_path",
     "max_tau_path",
     "mean_survival_probability",
@@ -47,8 +52,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--provenance", required=True, type=Path)
     parser.add_argument("--pipeline-config", type=Path)
     parser.add_argument("--path-summary-csv", type=Path)
-    parser.add_argument("--photon-opacity-mode", required=True, choices=["disabled", "vacuum", "constant_alpha_path"])
+    parser.add_argument("--medium-compressed-jsonl", type=Path)
+    parser.add_argument("--medium-compressed-summary-csv", type=Path)
+    parser.add_argument("--medium-compressed-provenance", type=Path)
+    parser.add_argument("--photon-opacity-mode", required=True, choices=["disabled", "vacuum", "constant_alpha_path", "density_gray_toy"])
     parser.add_argument("--photon-constant-alpha-per-rg", required=True, type=float)
+    parser.add_argument("--photon-density-gray-kappa-per-rg-per-gcm3", default=0.0, type=float)
+    parser.add_argument("--photon-density-gray-energy-exponent", default=0.0, type=float)
+    parser.add_argument("--photon-density-gray-reference-energy-gev", default=1.0, type=float)
+    parser.add_argument("--photon-opacity-truncated-path-policy", default="fail", choices=["fail", "exclude", "diagnostic_only"])
     parser.add_argument("--photon-opacity-fail-on-invalid", required=True, choices=["true", "false"])
     parser.add_argument("--photon-opacity-output-mode", required=True, choices=["separate_file"])
     return parser.parse_args()
@@ -119,6 +131,78 @@ def path_length_by_photon_id(path: Path | None) -> dict[str, float]:
     return out
 
 
+def medium_summary_counts(path: Path | None) -> dict[str, int]:
+    if path is None or not path.exists():
+        return {}
+    _, rows = read_csv(path)
+    if not rows:
+        return {}
+    row = rows[0]
+    out: dict[str, int] = {}
+    for key in ["n_compressed_paths_total", "n_compressed_paths_used", "n_compressed_paths_excluded_truncated"]:
+        try:
+            out[key] = int(row.get(key, 0) or 0)
+        except ValueError:
+            out[key] = 0
+    return out
+
+
+def medium_tau_by_photon_id(
+    path: Path | None,
+    *,
+    kappa: float,
+    energy_exponent: float,
+    reference_energy: float,
+) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+    if path is None or not path.exists():
+        raise FileNotFoundError("density_gray_toy requires photon_observer_medium_compressed_segments.jsonl")
+    if kappa < 0.0 or not math.isfinite(kappa):
+        raise ValueError("photon_density_gray_kappa_per_rg_per_gcm3 must be finite and non-negative")
+    if reference_energy <= 0.0 or not math.isfinite(reference_energy):
+        raise ValueError("photon_density_gray_reference_energy_gev must be finite and > 0")
+    if not math.isfinite(energy_exponent):
+        raise ValueError("photon_density_gray_energy_exponent must be finite")
+
+    by_path: dict[str, dict[str, float]] = {}
+    total_segments = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            row = json.loads(stripped)
+            if not isinstance(row, dict):
+                raise ValueError(f"invalid medium segment row at {line_number}")
+            path_id = str(row.get("photon_path_id", "")).strip()
+            if not path_id:
+                raise ValueError(f"medium segment row {line_number} missing photon_path_id")
+            if not as_bool(row.get("compression_complete", False)):
+                continue
+            if row.get("medium_status") != "valid":
+                continue
+            rho = as_float(row.get("rho_g_cm3"))
+            e_gamma = as_float(row.get("E_gamma_fluid_gev"))
+            dl = as_float(row.get("dl_segment_rg"))
+            if rho is None or rho < 0.0:
+                raise ValueError(f"invalid rho_g_cm3 at medium segment row {line_number}")
+            if e_gamma is None or e_gamma <= 0.0:
+                raise ValueError(f"invalid E_gamma_fluid_gev at medium segment row {line_number}")
+            if dl is None or dl < 0.0:
+                raise ValueError(f"invalid dl_segment_rg at medium segment row {line_number}")
+            alpha = kappa * rho * ((e_gamma / reference_energy) ** energy_exponent)
+            if not math.isfinite(alpha) or alpha < 0.0:
+                raise ValueError(f"invalid alpha_gamma_per_rg at medium segment row {line_number}")
+            tau_increment = alpha * dl
+            if not math.isfinite(tau_increment) or tau_increment < 0.0:
+                raise ValueError(f"invalid tau increment at medium segment row {line_number}")
+            item = by_path.setdefault(path_id, {"tau": 0.0, "n_segments": 0.0, "path_length": 0.0})
+            item["tau"] += tau_increment
+            item["n_segments"] += 1.0
+            item["path_length"] += dl
+            total_segments += 1
+    return by_path, {"n_medium_segments_integrated": total_segments}
+
+
 def git_hash() -> str | None:
     try:
         completed = subprocess.run(
@@ -144,6 +228,8 @@ def opacity_row(
     observed: float,
     integration_method: str,
     status: str,
+    n_medium_segments_used: int | str = "",
+    path_subset_status: str = "",
 ) -> dict[str, Any]:
     survival = math.exp(-tau)
     attenuated = observed * survival
@@ -159,6 +245,9 @@ def opacity_row(
             "attenuated_observed_energy_gev": attenuated,
             "opacity_integration_method": integration_method,
             "photon_opacity_status": status,
+            "opacity_status": status,
+            "n_medium_segments_used": n_medium_segments_used,
+            "path_subset_status": path_subset_status,
         }
     )
     return out
@@ -177,6 +266,9 @@ def invalid_row(row: dict[str, str], *, mode: str, model: str, status: str) -> d
             "attenuated_observed_energy_gev": "",
             "opacity_integration_method": "",
             "photon_opacity_status": status,
+            "opacity_status": status,
+            "n_medium_segments_used": "",
+            "path_subset_status": "",
         }
     )
     return out
@@ -187,6 +279,8 @@ def build_opacity_rows(
     *,
     mode: str,
     alpha_const_per_rg: float,
+    density_tau_by_path: dict[str, dict[str, float]] | None = None,
+    n_paths_excluded_truncated: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     output_rows: list[dict[str, Any]] = []
     valid = 0
@@ -195,21 +289,50 @@ def build_opacity_rows(
     survivals: list[float] = []
     total_observed = 0.0
     total_attenuated = 0.0
-    model = "vacuum_no_absorption" if mode == "vacuum" else "constant_alpha_per_rg"
-    integration_method = "vacuum_identity" if mode == "vacuum" else "constant_alpha_path"
+    model = (
+        "vacuum_no_absorption"
+        if mode == "vacuum"
+        else "constant_alpha_per_rg"
+        if mode == "constant_alpha_path"
+        else "density_gray_toy_analytic_torus"
+    )
+    integration_method = (
+        "vacuum_identity"
+        if mode == "vacuum"
+        else "constant_alpha_path"
+        if mode == "constant_alpha_path"
+        else "density_gray_toy_compressed_segments"
+    )
+    used_paths: set[str] = set()
 
     for row in rows:
         observed = as_float(row.get("observed_energy_gev"))
         if row.get("redshift_status") == "valid" and observed is not None:
             if mode == "vacuum":
                 tau = 0.0
-            else:
+                n_segments: int | str = ""
+                subset_status = ""
+            elif mode == "constant_alpha_path":
                 path_length = as_float(row.get("total_path_length_rg"))
                 if path_length is None or path_length < 0.0:
                     output_rows.append(invalid_row(row, mode=mode, model=model, status="invalid_missing_path_length"))
                     invalid += 1
                     continue
                 tau = alpha_const_per_rg * path_length
+                n_segments = ""
+                subset_status = ""
+            else:
+                path_id = str(row.get("photon_path_id", "")).strip()
+                item = (density_tau_by_path or {}).get(path_id)
+                if item is None:
+                    out = invalid_row(row, mode=mode, model=model, status="excluded_or_missing_complete_medium_path")
+                    out["path_subset_status"] = "excluded_or_missing_complete_path"
+                    output_rows.append(out)
+                    continue
+                tau = float(item["tau"])
+                n_segments = int(item["n_segments"])
+                subset_status = "complete_path_subset_only"
+                used_paths.add(path_id)
             out = opacity_row(
                 row,
                 mode=mode,
@@ -218,6 +341,8 @@ def build_opacity_rows(
                 observed=observed,
                 integration_method=integration_method,
                 status=f"valid_{mode}",
+                n_medium_segments_used=n_segments,
+                path_subset_status=subset_status,
             )
             survival = float(out["photon_survival_probability"])
             attenuated = float(out["attenuated_observed_energy_gev"])
@@ -237,6 +362,8 @@ def build_opacity_rows(
         "n_input_photons": len(rows),
         "n_opacity_valid": valid,
         "n_opacity_invalid": invalid,
+        "n_paths_used": len(used_paths) if mode == "density_gray_toy" else valid,
+        "n_paths_excluded_truncated": n_paths_excluded_truncated if mode == "density_gray_toy" else 0,
         "mean_tau_path": sum(taus) / len(taus) if taus else "",
         "max_tau_path": max(taus) if taus else "",
         "mean_survival_probability": sum(survivals) / len(survivals) if survivals else "",
@@ -276,14 +403,20 @@ def validate_opacity_outputs(rows: list[dict[str, Any]], *, mode: str, alpha_con
 
 
 def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, created_outputs: bool) -> None:
-    absorption_applied = args.photon_opacity_mode == "constant_alpha_path" and float(args.photon_constant_alpha_per_rg) > 0.0
+    absorption_applied = (
+        (args.photon_opacity_mode == "constant_alpha_path" and float(args.photon_constant_alpha_per_rg) > 0.0)
+        or (args.photon_opacity_mode == "density_gray_toy" and float(args.photon_density_gray_kappa_per_rg_per_gcm3) > 0.0)
+    )
     model = (
         "vacuum_no_absorption"
         if args.photon_opacity_mode == "vacuum"
         else "constant_alpha_per_rg"
         if args.photon_opacity_mode == "constant_alpha_path"
+        else "density_gray_toy_analytic_torus"
+        if args.photon_opacity_mode == "density_gray_toy"
         else "none"
     )
+    toy_mode = args.photon_opacity_mode == "density_gray_toy"
     provenance = {
         "phase": "photon_observer_camera_opacity",
         "input": str(args.redshift_csv),
@@ -292,10 +425,24 @@ def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, creat
         "photon_opacity_mode": args.photon_opacity_mode,
         "photon_opacity_model": model,
         "alpha_const_per_rg": float(args.photon_constant_alpha_per_rg),
-        "tau_integration_method": "constant_alpha_path" if args.photon_opacity_mode == "constant_alpha_path" else "vacuum_identity" if args.photon_opacity_mode == "vacuum" else "none",
+        "density_gray_kappa_per_rg_per_gcm3": float(args.photon_density_gray_kappa_per_rg_per_gcm3),
+        "density_gray_energy_exponent": float(args.photon_density_gray_energy_exponent),
+        "density_gray_reference_energy_gev": float(args.photon_density_gray_reference_energy_gev),
+        "tau_integration_method": "density_gray_toy_compressed_segments" if toy_mode else "constant_alpha_path" if args.photon_opacity_mode == "constant_alpha_path" else "vacuum_identity" if args.photon_opacity_mode == "vacuum" else "none",
         "path_summary_csv": str(args.path_summary_csv) if args.path_summary_csv else None,
+        "medium_compressed_jsonl": str(args.medium_compressed_jsonl) if args.medium_compressed_jsonl else None,
+        "medium_compressed_summary_csv": str(args.medium_compressed_summary_csv) if args.medium_compressed_summary_csv else None,
+        "medium_compressed_provenance": str(args.medium_compressed_provenance) if args.medium_compressed_provenance else None,
         "path_sampling_used": False,
         "path_sampling_audit_available": bool(args.path_summary_csv and args.path_summary_csv.exists()),
+        "medium_lookup_used": toy_mode,
+        "medium_input_path_mode": "compressed_complete_paths" if toy_mode else "none",
+        "truncated_path_policy": args.photon_opacity_truncated_path_policy,
+        "n_paths_excluded_truncated": summary.get("n_paths_excluded_truncated", 0),
+        "opacity_is_toy_model": toy_mode,
+        "not_pair_production": True,
+        "not_compton": True,
+        "not_physical_radiative_transfer": toy_mode,
         "photon_opacity_output_mode": args.photon_opacity_output_mode,
         "photon_opacity_fail_on_invalid": as_bool(args.photon_opacity_fail_on_invalid),
         "photon_absorption_applied": absorption_applied,
@@ -311,8 +458,8 @@ def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, creat
             "path sampling is an audit artifact and is not required for production opacity integration",
             "no pair production",
             "no Compton scattering",
-            "no medium lookup",
-            "no rho/T/Ye/u_fluid",
+            "density_gray_toy uses analytic_torus medium lookup only" if toy_mode else "no medium lookup",
+            "density_gray_toy is not physical radiative transfer" if toy_mode else "no rho/T/Ye/u_fluid",
             "no full radiative transfer",
             "no detector response",
         ],
@@ -327,6 +474,12 @@ def main() -> int:
     try:
         if not math.isfinite(float(args.photon_constant_alpha_per_rg)) or float(args.photon_constant_alpha_per_rg) < 0.0:
             raise ValueError("photon_constant_alpha_per_rg must be finite and non-negative")
+        if not math.isfinite(float(args.photon_density_gray_kappa_per_rg_per_gcm3)) or float(args.photon_density_gray_kappa_per_rg_per_gcm3) < 0.0:
+            raise ValueError("photon_density_gray_kappa_per_rg_per_gcm3 must be finite and non-negative")
+        if not math.isfinite(float(args.photon_density_gray_energy_exponent)):
+            raise ValueError("photon_density_gray_energy_exponent must be finite")
+        if not math.isfinite(float(args.photon_density_gray_reference_energy_gev)) or float(args.photon_density_gray_reference_energy_gev) <= 0.0:
+            raise ValueError("photon_density_gray_reference_energy_gev must be finite and > 0")
         if args.photon_opacity_mode == "disabled":
             write_provenance(
                 args,
@@ -350,10 +503,27 @@ def main() -> int:
             raise ValueError("photon opacity mode requires observed_energy_gev")
         if args.photon_opacity_mode == "constant_alpha_path" and "total_path_length_rg" not in fields:
             raise ValueError("constant_alpha_path requires total_path_length_rg from photon geodesic integration")
+        density_tau: dict[str, dict[str, float]] | None = None
+        n_excluded = 0
+        if args.photon_opacity_mode == "density_gray_toy":
+            medium_counts = medium_summary_counts(args.medium_compressed_summary_csv)
+            n_excluded = int(medium_counts.get("n_compressed_paths_excluded_truncated", 0))
+            if n_excluded > 0 and args.photon_opacity_truncated_path_policy == "fail":
+                raise ValueError("density_gray_toy found truncated paths and photon_opacity_truncated_path_policy=fail")
+            density_tau, _ = medium_tau_by_photon_id(
+                args.medium_compressed_jsonl,
+                kappa=float(args.photon_density_gray_kappa_per_rg_per_gcm3),
+                energy_exponent=float(args.photon_density_gray_energy_exponent),
+                reference_energy=float(args.photon_density_gray_reference_energy_gev),
+            )
+            if not density_tau:
+                raise ValueError("density_gray_toy found no complete valid medium paths")
         output_rows, summary = build_opacity_rows(
             rows,
             mode=args.photon_opacity_mode,
             alpha_const_per_rg=float(args.photon_constant_alpha_per_rg),
+            density_tau_by_path=density_tau,
+            n_paths_excluded_truncated=n_excluded,
         )
         validate_opacity_outputs(
             output_rows,

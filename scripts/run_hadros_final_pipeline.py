@@ -110,6 +110,10 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "enable_photon_opacity",
         "photon_opacity_mode",
         "photon_constant_alpha_per_rg",
+        "photon_density_gray_kappa_per_rg_per_gcm3",
+        "photon_density_gray_energy_exponent",
+        "photon_density_gray_reference_energy_gev",
+        "photon_opacity_truncated_path_policy",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
         "enable_photon_path_sampling",
@@ -117,6 +121,21 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_path_sample_max_rows_per_photon",
         "photon_path_sampling_output_format",
         "photon_path_sampling_require_validation",
+        "enable_photon_path_compression",
+        "photon_path_compression_mode",
+        "photon_path_compression_stride",
+        "photon_path_compression_require_complete_paths",
+        "photon_path_compression_output_format",
+        "photon_medium_model",
+        "photon_medium_input_path_mode",
+        "photon_medium_truncated_path_policy",
+        "photon_medium_torus_rho0_g_cm3",
+        "photon_medium_torus_r0_rg",
+        "photon_medium_torus_sigma_r_rg",
+        "photon_medium_torus_H_over_r",
+        "photon_medium_torus_temperature_mev",
+        "photon_medium_torus_Ye",
+        "photon_medium_torus_fluid_frame",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -159,10 +178,20 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
     as_bool(values["photon_opacity_fail_on_invalid"])
     as_bool(values["enable_photon_path_sampling"])
     as_bool(values["photon_path_sampling_require_validation"])
-    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum", "constant_alpha_path"}:
-        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled', 'vacuum', or 'constant_alpha_path'")
+    as_bool(values["enable_photon_path_compression"])
+    as_bool(values["photon_path_compression_require_complete_paths"])
+    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum", "constant_alpha_path", "density_gray_toy"}:
+        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled', 'vacuum', 'constant_alpha_path', or 'density_gray_toy'")
     if not math.isfinite(float(values["photon_constant_alpha_per_rg"])) or float(values["photon_constant_alpha_per_rg"]) < 0.0:
         raise ValueError("photon_constant_alpha_per_rg must be finite and non-negative")
+    if not math.isfinite(float(values["photon_density_gray_kappa_per_rg_per_gcm3"])) or float(values["photon_density_gray_kappa_per_rg_per_gcm3"]) < 0.0:
+        raise ValueError("photon_density_gray_kappa_per_rg_per_gcm3 must be finite and non-negative")
+    if not math.isfinite(float(values["photon_density_gray_energy_exponent"])):
+        raise ValueError("photon_density_gray_energy_exponent must be finite")
+    if not math.isfinite(float(values["photon_density_gray_reference_energy_gev"])) or float(values["photon_density_gray_reference_energy_gev"]) <= 0.0:
+        raise ValueError("photon_density_gray_reference_energy_gev must be finite and > 0")
+    if str(values["photon_opacity_truncated_path_policy"]) not in {"fail", "exclude", "diagnostic_only"}:
+        raise ValueError("Unsupported photon_opacity_truncated_path_policy; expected 'fail', 'exclude', or 'diagnostic_only'")
     if str(values["photon_opacity_output_mode"]) != "separate_file":
         raise ValueError("photon_opacity_output_mode must be separate_file")
     if as_bool(values["enable_photon_opacity"]):
@@ -174,6 +203,13 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("enable_photon_opacity requires photon_redshift_mode='validated_zamo'")
         if not as_bool(values["enable_photon_validation_gate"]):
             raise ValueError("photon opacity requires enable_photon_validation_gate=true")
+        if str(values["photon_opacity_mode"]) == "density_gray_toy":
+            if str(values["photon_medium_model"]) != "analytic_torus":
+                raise ValueError("density_gray_toy requires photon_medium_model='analytic_torus'")
+            if str(values["photon_medium_input_path_mode"]) != "compressed_complete_paths":
+                raise ValueError("density_gray_toy requires photon_medium_input_path_mode='compressed_complete_paths'")
+            if str(values["photon_medium_truncated_path_policy"]) != str(values["photon_opacity_truncated_path_policy"]):
+                raise ValueError("density_gray_toy requires medium and opacity truncated path policies to match")
     if as_bool(values["enable_photon_observer_science_products"]):
         if str(values["photon_observer_mode"]) != "observer_camera_projection":
             raise ValueError("enable_photon_observer_science_products requires photon_observer_mode='observer_camera_projection'")
@@ -232,6 +268,53 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("photon_path_sample_max_rows_per_photon must be > 0")
     if str(values["photon_path_sampling_output_format"]) != "jsonl":
         raise ValueError("photon_path_sampling_output_format must be jsonl")
+    if str(values["photon_path_compression_mode"]) not in {"none", "fixed_stride_segments"}:
+        raise ValueError("Unsupported photon_path_compression_mode; expected 'none' or 'fixed_stride_segments'")
+    if int(values["photon_path_compression_stride"]) <= 0:
+        raise ValueError("photon_path_compression_stride must be > 0")
+    if str(values["photon_path_compression_output_format"]) != "jsonl":
+        raise ValueError("photon_path_compression_output_format must be jsonl")
+    if as_bool(values["enable_photon_path_compression"]):
+        if not as_bool(values["enable_photon_path_sampling"]):
+            raise ValueError("enable_photon_path_compression requires enable_photon_path_sampling=true")
+        if str(values["photon_path_compression_mode"]) != "fixed_stride_segments":
+            raise ValueError("enable_photon_path_compression requires photon_path_compression_mode='fixed_stride_segments'")
+    if str(values["photon_medium_model"]) not in {"none", "analytic_torus"}:
+        raise ValueError("Unsupported photon_medium_model; expected 'none' or 'analytic_torus'")
+    if str(values["photon_medium_input_path_mode"]) not in {"raw_samples", "compressed_complete_paths"}:
+        raise ValueError("Unsupported photon_medium_input_path_mode; expected 'raw_samples' or 'compressed_complete_paths'")
+    if str(values["photon_medium_truncated_path_policy"]) not in {"fail", "exclude", "diagnostic_only"}:
+        raise ValueError("Unsupported photon_medium_truncated_path_policy; expected 'fail', 'exclude', or 'diagnostic_only'")
+    if str(values["photon_medium_torus_fluid_frame"]) != "zamo":
+        raise ValueError("photon_medium_torus_fluid_frame must be zamo")
+    medium_numeric_bounds = {
+        "photon_medium_torus_rho0_g_cm3": (0.0, None),
+        "photon_medium_torus_r0_rg": (0.0, None),
+        "photon_medium_torus_sigma_r_rg": (0.0, None),
+        "photon_medium_torus_H_over_r": (0.0, None),
+        "photon_medium_torus_temperature_mev": (0.0, None),
+        "photon_medium_torus_Ye": (0.0, 1.0),
+    }
+    for key, (lower, upper) in medium_numeric_bounds.items():
+        value = float(values[key])
+        if not math.isfinite(value):
+            raise ValueError(f"{key} must be finite")
+        if value < lower:
+            raise ValueError(f"{key} must be >= {lower}")
+        if upper is not None and value > upper:
+            raise ValueError(f"{key} must be <= {upper}")
+        if key in {"photon_medium_torus_r0_rg", "photon_medium_torus_sigma_r_rg", "photon_medium_torus_H_over_r"} and value <= 0.0:
+            raise ValueError(f"{key} must be > 0")
+    if str(values["photon_medium_model"]) == "analytic_torus":
+        if not as_bool(values["enable_photon_observer_camera"]):
+            raise ValueError("photon_medium_model='analytic_torus' requires enable_photon_observer_camera=true")
+        if not as_bool(values["enable_photon_path_sampling"]):
+            raise ValueError("photon_medium_model='analytic_torus' requires enable_photon_path_sampling=true")
+        if str(values["photon_medium_input_path_mode"]) == "compressed_complete_paths":
+            if not as_bool(values["enable_photon_path_compression"]):
+                raise ValueError("photon_medium_input_path_mode='compressed_complete_paths' requires enable_photon_path_compression=true")
+            if str(values["photon_path_compression_mode"]) != "fixed_stride_segments":
+                raise ValueError("compressed_complete_paths requires photon_path_compression_mode='fixed_stride_segments'")
     return values
 
 
@@ -389,6 +472,10 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "enable_photon_opacity": as_bool(photon["enable_photon_opacity"]),
         "photon_opacity_mode": photon["photon_opacity_mode"],
         "photon_constant_alpha_per_rg": float(photon["photon_constant_alpha_per_rg"]),
+        "photon_density_gray_kappa_per_rg_per_gcm3": float(photon["photon_density_gray_kappa_per_rg_per_gcm3"]),
+        "photon_density_gray_energy_exponent": float(photon["photon_density_gray_energy_exponent"]),
+        "photon_density_gray_reference_energy_gev": float(photon["photon_density_gray_reference_energy_gev"]),
+        "photon_opacity_truncated_path_policy": photon["photon_opacity_truncated_path_policy"],
         "photon_opacity_fail_on_invalid": as_bool(photon["photon_opacity_fail_on_invalid"]),
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
         "enable_photon_path_sampling": as_bool(photon["enable_photon_path_sampling"]),
@@ -396,6 +483,21 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_path_sample_max_rows_per_photon": int(photon["photon_path_sample_max_rows_per_photon"]),
         "photon_path_sampling_output_format": photon["photon_path_sampling_output_format"],
         "photon_path_sampling_require_validation": as_bool(photon["photon_path_sampling_require_validation"]),
+        "enable_photon_path_compression": as_bool(photon["enable_photon_path_compression"]),
+        "photon_path_compression_mode": photon["photon_path_compression_mode"],
+        "photon_path_compression_stride": int(photon["photon_path_compression_stride"]),
+        "photon_path_compression_require_complete_paths": as_bool(photon["photon_path_compression_require_complete_paths"]),
+        "photon_path_compression_output_format": photon["photon_path_compression_output_format"],
+        "photon_medium_model": photon["photon_medium_model"],
+        "photon_medium_input_path_mode": photon["photon_medium_input_path_mode"],
+        "photon_medium_truncated_path_policy": photon["photon_medium_truncated_path_policy"],
+        "photon_medium_torus_rho0_g_cm3": float(photon["photon_medium_torus_rho0_g_cm3"]),
+        "photon_medium_torus_r0_rg": float(photon["photon_medium_torus_r0_rg"]),
+        "photon_medium_torus_sigma_r_rg": float(photon["photon_medium_torus_sigma_r_rg"]),
+        "photon_medium_torus_H_over_r": float(photon["photon_medium_torus_H_over_r"]),
+        "photon_medium_torus_temperature_mev": float(photon["photon_medium_torus_temperature_mev"]),
+        "photon_medium_torus_Ye": float(photon["photon_medium_torus_Ye"]),
+        "photon_medium_torus_fluid_frame": photon["photon_medium_torus_fluid_frame"],
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -464,16 +566,40 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             and str(photon["photon_redshift_mode"]) == "validated_zamo"
             and as_bool(photon["enable_photon_validation_gate"])
             and as_bool(photon["enable_photon_opacity"])
-            and str(photon["photon_opacity_mode"]) in {"vacuum", "constant_alpha_path"}
+            and str(photon["photon_opacity_mode"]) in {"vacuum", "constant_alpha_path", "density_gray_toy"}
         ),
         "photon_opacity_mode": photon["photon_opacity_mode"],
         "photon_constant_alpha_per_rg": float(photon["photon_constant_alpha_per_rg"]),
+        "photon_density_gray_kappa_per_rg_per_gcm3": float(photon["photon_density_gray_kappa_per_rg_per_gcm3"]),
+        "photon_density_gray_energy_exponent": float(photon["photon_density_gray_energy_exponent"]),
+        "photon_density_gray_reference_energy_gev": float(photon["photon_density_gray_reference_energy_gev"]),
+        "photon_opacity_truncated_path_policy": photon["photon_opacity_truncated_path_policy"],
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
         "photon_path_sampling_enabled_effective": (
             as_bool(photon["enable_photon_observer_camera"])
             and as_bool(photon["enable_photon_path_sampling"])
         ),
         "photon_path_sampling_output_format": photon["photon_path_sampling_output_format"],
+        "photon_path_compression_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and as_bool(photon["enable_photon_path_sampling"])
+            and as_bool(photon["enable_photon_path_compression"])
+            and str(photon["photon_path_compression_mode"]) == "fixed_stride_segments"
+        ),
+        "photon_path_compression_mode": photon["photon_path_compression_mode"],
+        "photon_path_compression_stride": int(photon["photon_path_compression_stride"]),
+        "photon_path_compression_applies_medium_lookup": False,
+        "photon_path_compression_applies_opacity": False,
+        "photon_medium_lookup_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and as_bool(photon["enable_photon_path_sampling"])
+            and str(photon["photon_medium_model"]) == "analytic_torus"
+        ),
+        "photon_medium_model": photon["photon_medium_model"],
+        "photon_medium_input_path_mode": photon["photon_medium_input_path_mode"],
+        "photon_medium_truncated_path_policy": photon["photon_medium_truncated_path_policy"],
+        "photon_medium_torus_fluid_frame": photon["photon_medium_torus_fluid_frame"],
+        "photon_medium_lookup_applies_opacity": False,
         "photon_absorption_applied": False,
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
@@ -796,6 +922,125 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                 allow_empty_outputs=(cascade / "photon_escape_classifier.jsonl",),
             )
         )
+        if as_bool(photon["enable_photon_path_compression"]) and str(photon["photon_path_compression_mode"]) == "fixed_stride_segments":
+            steps.append(
+                FinalStep(
+                    "photon_path_compression_fixed_stride_segments",
+                    [
+                        sys.executable,
+                        "scripts/science/build_photon_path_compression.py",
+                        "--path-samples-jsonl",
+                        str(cascade / "photon_observer_geodesic_path_samples.jsonl"),
+                        "--path-samples-per-photon-summary-csv",
+                        str(cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv"),
+                        "--output-jsonl",
+                        str(cascade / "photon_observer_compressed_path_segments.jsonl"),
+                        "--summary-csv",
+                        str(cascade / "photon_observer_compressed_path_summary.csv"),
+                        "--provenance",
+                        str(cascade / "photon_observer_compressed_path_provenance.json"),
+                        "--pipeline-config",
+                        str(science_config),
+                        "--photon-path-compression-mode",
+                        str(photon["photon_path_compression_mode"]),
+                        "--photon-path-compression-stride",
+                        str(int(photon["photon_path_compression_stride"])),
+                        "--photon-path-compression-require-complete-paths",
+                        "true" if as_bool(photon["photon_path_compression_require_complete_paths"]) else "false",
+                        "--photon-path-compression-output-format",
+                        str(photon["photon_path_compression_output_format"]),
+                    ],
+                    [
+                        cascade / "photon_observer_compressed_path_segments.jsonl",
+                        cascade / "photon_observer_compressed_path_summary.csv",
+                        cascade / "photon_observer_compressed_path_provenance.json",
+                    ],
+                    allow_empty_outputs=(cascade / "photon_observer_compressed_path_segments.jsonl",),
+                )
+            )
+        if str(photon["photon_medium_model"]) == "analytic_torus":
+            medium_input_mode = str(photon["photon_medium_input_path_mode"])
+            medium_output_jsonl = cascade / (
+                "photon_observer_medium_compressed_segments.jsonl"
+                if medium_input_mode == "compressed_complete_paths"
+                else "photon_observer_medium_path_samples.jsonl"
+            )
+            medium_summary_csv = cascade / (
+                "photon_observer_medium_compressed_summary.csv"
+                if medium_input_mode == "compressed_complete_paths"
+                else "photon_observer_medium_summary.csv"
+            )
+            medium_provenance = cascade / (
+                "photon_observer_medium_compressed_provenance.json"
+                if medium_input_mode == "compressed_complete_paths"
+                else "photon_observer_medium_provenance.json"
+            )
+            medium_command = [
+                sys.executable,
+                "scripts/science/build_photon_observer_medium_lookup.py",
+                "--output-jsonl",
+                str(medium_output_jsonl),
+                "--summary-csv",
+                str(medium_summary_csv),
+                "--provenance",
+                str(medium_provenance),
+                "--pipeline-config",
+                str(science_config),
+                "--spin",
+                str(config.get("spin", 0.8)),
+                "--photon-medium-input-path-mode",
+                medium_input_mode,
+                "--photon-medium-truncated-path-policy",
+                str(photon["photon_medium_truncated_path_policy"]),
+            ]
+            if medium_input_mode == "compressed_complete_paths":
+                medium_command.extend(
+                    [
+                        "--compressed-segments-jsonl",
+                        str(cascade / "photon_observer_compressed_path_segments.jsonl"),
+                        "--compressed-summary-csv",
+                        str(cascade / "photon_observer_compressed_path_summary.csv"),
+                    ]
+                )
+            else:
+                medium_command.extend(
+                    [
+                        "--path-samples-jsonl",
+                        str(cascade / "photon_observer_geodesic_path_samples.jsonl"),
+                    ]
+                )
+            medium_command.extend(
+                [
+                    "--photon-medium-model",
+                    str(photon["photon_medium_model"]),
+                    "--photon-medium-torus-rho0-g-cm3",
+                    str(photon["photon_medium_torus_rho0_g_cm3"]),
+                    "--photon-medium-torus-r0-rg",
+                    str(photon["photon_medium_torus_r0_rg"]),
+                    "--photon-medium-torus-sigma-r-rg",
+                    str(photon["photon_medium_torus_sigma_r_rg"]),
+                    "--photon-medium-torus-H-over-r",
+                    str(photon["photon_medium_torus_H_over_r"]),
+                    "--photon-medium-torus-temperature-mev",
+                    str(photon["photon_medium_torus_temperature_mev"]),
+                    "--photon-medium-torus-Ye",
+                    str(photon["photon_medium_torus_Ye"]),
+                    "--photon-medium-torus-fluid-frame",
+                    str(photon["photon_medium_torus_fluid_frame"]),
+                ]
+            )
+            steps.append(
+                FinalStep(
+                    "photon_medium_lookup_analytic_torus",
+                    medium_command,
+                    [
+                        medium_output_jsonl,
+                        medium_summary_csv,
+                        medium_provenance,
+                    ],
+                    allow_empty_outputs=(medium_output_jsonl,),
+                )
+            )
         if photon_mode in {"observer_sphere_hits", "observer_camera_projection"}:
             steps.append(
                 FinalStep(
@@ -953,36 +1198,56 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                             ],
                         )
                     )
-                attenuated_opacity_modes = {"vacuum", "constant_alpha_path"}
+                attenuated_opacity_modes = {"vacuum", "constant_alpha_path", "density_gray_toy"}
                 opacity_mode = str(photon["photon_opacity_mode"])
                 if as_bool(photon["enable_photon_opacity"]) and opacity_mode in attenuated_opacity_modes:
+                    opacity_command = [
+                        sys.executable,
+                        "scripts/science/build_photon_observer_opacity.py",
+                        "--redshift-csv",
+                        str(cascade / "photon_observer_camera_redshift.csv"),
+                        "--output-csv",
+                        str(cascade / "photon_observer_camera_attenuated.csv"),
+                        "--summary-csv",
+                        str(cascade / "photon_observer_opacity_summary.csv"),
+                        "--provenance",
+                        str(cascade / "photon_observer_opacity_provenance.json"),
+                        "--pipeline-config",
+                        str(science_config),
+                        "--path-summary-csv",
+                        str(cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv"),
+                        "--photon-opacity-mode",
+                        str(photon["photon_opacity_mode"]),
+                        "--photon-constant-alpha-per-rg",
+                        str(photon["photon_constant_alpha_per_rg"]),
+                        "--photon-density-gray-kappa-per-rg-per-gcm3",
+                        str(photon["photon_density_gray_kappa_per_rg_per_gcm3"]),
+                        "--photon-density-gray-energy-exponent",
+                        str(photon["photon_density_gray_energy_exponent"]),
+                        "--photon-density-gray-reference-energy-gev",
+                        str(photon["photon_density_gray_reference_energy_gev"]),
+                        "--photon-opacity-truncated-path-policy",
+                        str(photon["photon_opacity_truncated_path_policy"]),
+                        "--photon-opacity-fail-on-invalid",
+                        "true" if as_bool(photon["photon_opacity_fail_on_invalid"]) else "false",
+                        "--photon-opacity-output-mode",
+                        str(photon["photon_opacity_output_mode"]),
+                    ]
+                    if opacity_mode == "density_gray_toy":
+                        opacity_command.extend(
+                            [
+                                "--medium-compressed-jsonl",
+                                str(cascade / "photon_observer_medium_compressed_segments.jsonl"),
+                                "--medium-compressed-summary-csv",
+                                str(cascade / "photon_observer_medium_compressed_summary.csv"),
+                                "--medium-compressed-provenance",
+                                str(cascade / "photon_observer_medium_compressed_provenance.json"),
+                            ]
+                        )
                     steps.append(
                         FinalStep(
                             f"photon_observer_opacity_{opacity_mode}",
-                            [
-                                sys.executable,
-                                "scripts/science/build_photon_observer_opacity.py",
-                                "--redshift-csv",
-                                str(cascade / "photon_observer_camera_redshift.csv"),
-                                "--output-csv",
-                                str(cascade / "photon_observer_camera_attenuated.csv"),
-                                "--summary-csv",
-                                str(cascade / "photon_observer_opacity_summary.csv"),
-                                "--provenance",
-                                str(cascade / "photon_observer_opacity_provenance.json"),
-                                "--pipeline-config",
-                                str(science_config),
-                                "--path-summary-csv",
-                                str(cascade / "photon_observer_geodesic_path_samples_per_photon_summary.csv"),
-                                "--photon-opacity-mode",
-                                str(photon["photon_opacity_mode"]),
-                                "--photon-constant-alpha-per-rg",
-                                str(photon["photon_constant_alpha_per_rg"]),
-                                "--photon-opacity-fail-on-invalid",
-                                "true" if as_bool(photon["photon_opacity_fail_on_invalid"]) else "false",
-                                "--photon-opacity-output-mode",
-                                str(photon["photon_opacity_output_mode"]),
-                            ],
+                            opacity_command,
                             [
                                 cascade / "photon_observer_camera_attenuated.csv",
                                 cascade / "photon_observer_opacity_summary.csv",

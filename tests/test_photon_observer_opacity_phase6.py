@@ -134,20 +134,150 @@ def write_path_summary(path: Path) -> None:
     )
 
 
+def write_medium_compressed(tmp: Path, *, include_truncated: bool = True, e_gamma_second: float = 2.0) -> tuple[Path, Path, Path]:
+    medium = tmp / "photon_observer_medium_compressed_segments.jsonl"
+    summary = tmp / "photon_observer_medium_compressed_summary.csv"
+    provenance = tmp / "photon_observer_medium_compressed_provenance.json"
+    rows = [
+        {
+            "event_id": 1,
+            "particle_id": 1,
+            "photon_path_id": 101,
+            "segment_index": 0,
+            "r_mid_rg": 10.0,
+            "theta_mid_rad": 1.0,
+            "phi_mid_rad": 0.0,
+            "p_t_mid": -1.0,
+            "p_r_mid": 0.0,
+            "p_theta_mid": 0.0,
+            "p_phi_mid": 0.0,
+            "dl_segment_rg": 2.0,
+            "rho_g_cm3": 3.0,
+            "temperature_mev": 1.0,
+            "Ye": 0.5,
+            "u_fluid_t": 1.0,
+            "u_fluid_r": 0.0,
+            "u_fluid_theta": 0.0,
+            "u_fluid_phi": 0.0,
+            "E_gamma_fluid_gev": 1.0,
+            "medium_status": "valid",
+            "compression_complete": True,
+        },
+        {
+            "event_id": 1,
+            "particle_id": 2,
+            "photon_path_id": 102,
+            "segment_index": 0,
+            "r_mid_rg": 10.0,
+            "theta_mid_rad": 1.0,
+            "phi_mid_rad": 0.0,
+            "p_t_mid": -1.0,
+            "p_r_mid": 0.0,
+            "p_theta_mid": 0.0,
+            "p_phi_mid": 0.0,
+            "dl_segment_rg": 5.0,
+            "rho_g_cm3": 3.0,
+            "temperature_mev": 1.0,
+            "Ye": 0.5,
+            "u_fluid_t": 1.0,
+            "u_fluid_r": 0.0,
+            "u_fluid_theta": 0.0,
+            "u_fluid_phi": 0.0,
+            "E_gamma_fluid_gev": e_gamma_second,
+            "medium_status": "valid",
+            "compression_complete": True,
+        },
+    ]
+    if include_truncated:
+        rows.append(
+            {
+                "event_id": 1,
+                "particle_id": 3,
+                "photon_path_id": 103,
+                "segment_index": 0,
+                "r_mid_rg": 10.0,
+                "theta_mid_rad": 1.0,
+                "phi_mid_rad": 0.0,
+                "p_t_mid": -1.0,
+                "p_r_mid": 0.0,
+                "p_theta_mid": 0.0,
+                "p_phi_mid": 0.0,
+                "dl_segment_rg": 7.0,
+                "rho_g_cm3": 3.0,
+                "temperature_mev": 1.0,
+                "Ye": 0.5,
+                "u_fluid_t": 1.0,
+                "u_fluid_r": 0.0,
+                "u_fluid_theta": 0.0,
+                "u_fluid_phi": 0.0,
+                "E_gamma_fluid_gev": 1.0,
+                "medium_status": "valid",
+                "compression_complete": False,
+            }
+        )
+    medium.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    write_csv(
+        summary,
+        [
+            "photon_medium_model",
+            "medium_input_path_mode",
+            "truncated_path_policy",
+            "n_medium_queries",
+            "n_medium_valid",
+            "n_medium_invalid",
+            "n_compressed_paths_total",
+            "n_compressed_paths_used",
+            "n_compressed_paths_excluded_truncated",
+        ],
+        [
+            {
+                "photon_medium_model": "analytic_torus",
+                "medium_input_path_mode": "compressed_complete_paths",
+                "truncated_path_policy": "exclude" if include_truncated else "fail",
+                "n_medium_queries": len(rows),
+                "n_medium_valid": len(rows),
+                "n_medium_invalid": 0,
+                "n_compressed_paths_total": 3 if include_truncated else 2,
+                "n_compressed_paths_used": 2,
+                "n_compressed_paths_excluded_truncated": 1 if include_truncated else 0,
+            }
+        ],
+    )
+    provenance.write_text(
+        json.dumps(
+            {
+                "medium_lookup_applied": True,
+                "medium_input_path_mode": "compressed_complete_paths",
+                "truncated_path_policy": "exclude" if include_truncated else "fail",
+                "no_opacity_applied": True,
+                "opacity_applied": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return medium, summary, provenance
+
+
 def run_opacity(
     tmp: Path,
     mode: str = "vacuum",
     fail_on_invalid: str = "true",
     alpha: float = 0.0,
     write_paths: bool = True,
+    kappa: float = 0.0,
+    energy_exponent: float = 0.0,
+    reference_energy: float = 1.0,
+    truncated_policy: str = "fail",
+    include_medium: bool = False,
+    include_truncated_medium: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     redshift = tmp / "photon_observer_camera_redshift.csv"
     write_redshift(redshift)
     path_summary = tmp / "photon_observer_geodesic_path_samples_per_photon_summary.csv"
     if write_paths:
         write_path_summary(path_summary)
-    return subprocess.run(
-        [
+    command = [
             sys.executable,
             str(SCRIPT),
             "--redshift-csv",
@@ -164,11 +294,33 @@ def run_opacity(
             mode,
             "--photon-constant-alpha-per-rg",
             str(alpha),
+            "--photon-density-gray-kappa-per-rg-per-gcm3",
+            str(kappa),
+            "--photon-density-gray-energy-exponent",
+            str(energy_exponent),
+            "--photon-density-gray-reference-energy-gev",
+            str(reference_energy),
+            "--photon-opacity-truncated-path-policy",
+            truncated_policy,
             "--photon-opacity-fail-on-invalid",
             fail_on_invalid,
             "--photon-opacity-output-mode",
             "separate_file",
-        ],
+        ]
+    if include_medium:
+        medium, medium_summary, medium_provenance = write_medium_compressed(tmp, include_truncated=include_truncated_medium)
+        command.extend(
+            [
+                "--medium-compressed-jsonl",
+                str(medium),
+                "--medium-compressed-summary-csv",
+                str(medium_summary),
+                "--medium-compressed-provenance",
+                str(medium_provenance),
+            ]
+        )
+    return subprocess.run(
+        command,
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -301,6 +453,14 @@ def test_constant_alpha_requires_path_length() -> None:
                 "constant_alpha_path",
                 "--photon-constant-alpha-per-rg",
                 "0.1",
+                "--photon-density-gray-kappa-per-rg-per-gcm3",
+                "0.0",
+                "--photon-density-gray-energy-exponent",
+                "0.0",
+                "--photon-density-gray-reference-energy-gev",
+                "1.0",
+                "--photon-opacity-truncated-path-policy",
+                "fail",
                 "--photon-opacity-fail-on-invalid",
                 "true",
                 "--photon-opacity-output-mode",
@@ -321,6 +481,116 @@ def test_unsupported_opacity_mode_fails() -> None:
         completed = run_opacity(tmp, mode="tabulated_gray")
         if completed.returncode == 0:
             raise AssertionError("tabulated_gray was accepted by initial Phase 6")
+
+
+def test_density_gray_toy_kappa_zero_matches_vacuum_for_complete_subset() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_density0_") as tmp_name:
+        tmp = Path(tmp_name)
+        completed = run_opacity(
+            tmp,
+            mode="density_gray_toy",
+            kappa=0.0,
+            truncated_policy="exclude",
+            include_medium=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        rows = read_csv(tmp / "photon_observer_camera_attenuated.csv")
+        valid = [row for row in rows if row["photon_opacity_status"] == "valid_density_gray_toy"]
+        if len(valid) != 2:
+            raise AssertionError(rows)
+        for row in valid:
+            if float(row["tau_path"]) != 0.0 or float(row["survival_probability"]) != 1.0:
+                raise AssertionError(row)
+            if float(row["attenuated_observed_energy_gev"]) != float(row["observed_energy_gev"]):
+                raise AssertionError(row)
+            if row["path_subset_status"] != "complete_path_subset_only":
+                raise AssertionError(row)
+        provenance = json.loads((tmp / "photon_observer_opacity_provenance.json").read_text(encoding="utf-8"))
+        if provenance["opacity_is_toy_model"] is not True or provenance["photon_absorption_applied"] is not False:
+            raise AssertionError(provenance)
+
+
+def test_density_gray_toy_constant_rho_tau() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_density_") as tmp_name:
+        tmp = Path(tmp_name)
+        kappa = 0.1
+        completed = run_opacity(
+            tmp,
+            mode="density_gray_toy",
+            kappa=kappa,
+            truncated_policy="exclude",
+            include_medium=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        rows = {row["photon_path_id"]: row for row in read_csv(tmp / "photon_observer_camera_attenuated.csv")}
+        expected = {"101": kappa * 3.0 * 2.0, "102": kappa * 3.0 * 5.0}
+        for path_id, tau in expected.items():
+            row = rows[path_id]
+            if abs(float(row["tau_path"]) - tau) > 1.0e-14:
+                raise AssertionError(row)
+            if int(row["n_medium_segments_used"]) != 1:
+                raise AssertionError(row)
+        if rows["103"]["photon_opacity_status"] != "excluded_or_missing_complete_medium_path":
+            raise AssertionError(rows["103"])
+        summary = read_csv(tmp / "photon_observer_opacity_summary.csv")[0]
+        if int(summary["n_paths_used"]) != 2 or int(summary["n_paths_excluded_truncated"]) != 1:
+            raise AssertionError(summary)
+
+
+def test_density_gray_toy_energy_exponent_uses_fluid_energy() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_density_e_") as tmp_name:
+        tmp = Path(tmp_name)
+        kappa = 0.1
+        completed = run_opacity(
+            tmp,
+            mode="density_gray_toy",
+            kappa=kappa,
+            energy_exponent=1.0,
+            reference_energy=1.0,
+            truncated_policy="exclude",
+            include_medium=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        rows = {row["photon_path_id"]: row for row in read_csv(tmp / "photon_observer_camera_attenuated.csv")}
+        if abs(float(rows["101"]["tau_path"]) - 0.6) > 1.0e-14:
+            raise AssertionError(rows["101"])
+        if abs(float(rows["102"]["tau_path"]) - 3.0) > 1.0e-14:
+            raise AssertionError(rows["102"])
+
+
+def test_density_gray_toy_truncated_fail_policy_fails() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_density_fail_") as tmp_name:
+        tmp = Path(tmp_name)
+        completed = run_opacity(
+            tmp,
+            mode="density_gray_toy",
+            kappa=0.1,
+            truncated_policy="fail",
+            include_medium=True,
+        )
+        if completed.returncode == 0:
+            raise AssertionError("density_gray_toy fail policy accepted truncated paths")
+
+
+def test_density_gray_toy_requires_complete_paths() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_density_none_") as tmp_name:
+        tmp = Path(tmp_name)
+        completed = run_opacity(
+            tmp,
+            mode="density_gray_toy",
+            kappa=0.1,
+            truncated_policy="exclude",
+            include_medium=True,
+            include_truncated_medium=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        provenance = json.loads((tmp / "photon_observer_opacity_provenance.json").read_text(encoding="utf-8"))
+        if provenance["medium_lookup_used"] is not True or provenance["not_physical_radiative_transfer"] is not True:
+            raise AssertionError(provenance)
 
 
 def test_science_products_write_separate_attenuated_products() -> None:
@@ -379,11 +649,22 @@ def test_science_products_write_separate_attenuated_products() -> None:
 def test_config_web_and_pipeline_schedule_opacity() -> None:
     values = config_web_final.defaults()
     photon = values["photon_escape_classifier"]
-    for key in ["enable_photon_opacity", "photon_opacity_mode", "photon_constant_alpha_per_rg", "photon_opacity_fail_on_invalid", "photon_opacity_output_mode"]:
+    opacity_keys = [
+        "enable_photon_opacity",
+        "photon_opacity_mode",
+        "photon_constant_alpha_per_rg",
+        "photon_density_gray_kappa_per_rg_per_gcm3",
+        "photon_density_gray_energy_exponent",
+        "photon_density_gray_reference_energy_gev",
+        "photon_opacity_truncated_path_policy",
+        "photon_opacity_fail_on_invalid",
+        "photon_opacity_output_mode",
+    ]
+    for key in opacity_keys:
         if key not in photon:
             raise AssertionError(key)
     pipeline = config_web_final.final_pipeline_config(values)
-    for key in ["enable_photon_opacity", "photon_opacity_mode", "photon_constant_alpha_per_rg", "photon_opacity_fail_on_invalid", "photon_opacity_output_mode"]:
+    for key in opacity_keys:
         if key not in pipeline or key not in pipeline["photon_escape_classifier"]:
             raise AssertionError(key)
 
@@ -400,6 +681,10 @@ def test_config_web_and_pipeline_schedule_opacity() -> None:
                 "enable_photon_opacity": True,
                 "photon_opacity_mode": "vacuum",
                 "photon_constant_alpha_per_rg": 0.0,
+                "photon_density_gray_kappa_per_rg_per_gcm3": 0.0,
+                "photon_density_gray_energy_exponent": 0.0,
+                "photon_density_gray_reference_energy_gev": 1.0,
+                "photon_opacity_truncated_path_policy": "fail",
                 "photon_opacity_fail_on_invalid": True,
                 "photon_opacity_output_mode": "separate_file",
                 "enable_photon_observer_science_products": True,
@@ -417,6 +702,10 @@ def test_config_web_and_pipeline_schedule_opacity() -> None:
                 "enable_photon_opacity": True,
                 "photon_opacity_mode": "vacuum",
                 "photon_constant_alpha_per_rg": 0.0,
+                "photon_density_gray_kappa_per_rg_per_gcm3": 0.0,
+                "photon_density_gray_energy_exponent": 0.0,
+                "photon_density_gray_reference_energy_gev": 1.0,
+                "photon_opacity_truncated_path_policy": "fail",
                 "photon_opacity_fail_on_invalid": True,
                 "photon_opacity_output_mode": "separate_file",
                 "enable_photon_observer_science_products": True,
@@ -448,6 +737,45 @@ def test_config_web_and_pipeline_schedule_opacity() -> None:
         if names.index("photon_observer_opacity_constant_alpha_path") <= names.index("photon_observer_camera_validation_gate"):
             raise AssertionError(names)
 
+        config.update(
+            {
+                "photon_opacity_mode": "density_gray_toy",
+                "photon_density_gray_kappa_per_rg_per_gcm3": 0.01,
+                "photon_opacity_truncated_path_policy": "exclude",
+                "enable_photon_path_sampling": True,
+                "enable_photon_path_compression": True,
+                "photon_path_compression_mode": "fixed_stride_segments",
+                "photon_medium_model": "analytic_torus",
+                "photon_medium_input_path_mode": "compressed_complete_paths",
+                "photon_medium_truncated_path_policy": "exclude",
+            }
+        )
+        config["photon_escape_classifier"].update(
+            {
+                "photon_opacity_mode": "density_gray_toy",
+                "photon_density_gray_kappa_per_rg_per_gcm3": 0.01,
+                "photon_opacity_truncated_path_policy": "exclude",
+                "enable_photon_path_sampling": True,
+                "enable_photon_path_compression": True,
+                "photon_path_compression_mode": "fixed_stride_segments",
+                "photon_medium_model": "analytic_torus",
+                "photon_medium_input_path_mode": "compressed_complete_paths",
+                "photon_medium_truncated_path_policy": "exclude",
+            }
+        )
+        steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
+        names = [step.name for step in steps]
+        if "photon_observer_opacity_density_gray_toy" not in names:
+            raise AssertionError(names)
+        density_command = " ".join(next(step.command for step in steps if step.name == "photon_observer_opacity_density_gray_toy"))
+        for required in [
+            "--medium-compressed-jsonl",
+            "--photon-density-gray-kappa-per-rg-per-gcm3 0.01",
+            "--photon-opacity-truncated-path-policy exclude",
+        ]:
+            if required not in density_command:
+                raise AssertionError(density_command)
+
 
 if __name__ == "__main__":
     test_disabled_does_not_create_attenuated_file()
@@ -457,5 +785,10 @@ if __name__ == "__main__":
     test_negative_constant_alpha_fails()
     test_constant_alpha_requires_path_length()
     test_unsupported_opacity_mode_fails()
+    test_density_gray_toy_kappa_zero_matches_vacuum_for_complete_subset()
+    test_density_gray_toy_constant_rho_tau()
+    test_density_gray_toy_energy_exponent_uses_fluid_energy()
+    test_density_gray_toy_truncated_fail_policy_fails()
+    test_density_gray_toy_requires_complete_paths()
     test_science_products_write_separate_attenuated_products()
     test_config_web_and_pipeline_schedule_opacity()
