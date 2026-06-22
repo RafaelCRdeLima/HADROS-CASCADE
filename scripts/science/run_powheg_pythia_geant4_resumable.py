@@ -65,6 +65,12 @@ POSITION_FIELDS = [
     "global_py",
     "global_pz",
     "global_momentum_status",
+    "momentum_input_mode",
+    "ready_particle_momentum_frame",
+    "momentum_input_mode_policy",
+    "n_zamo_r",
+    "n_zamo_theta",
+    "n_zamo_phi",
     "geant4_box_origin_x_cm",
     "geant4_box_origin_y_cm",
     "geant4_box_origin_z_cm",
@@ -81,6 +87,9 @@ STRING_POSITION_FIELDS = {
     "local_to_global_transform",
     "tetrad_status",
     "global_momentum_status",
+    "momentum_input_mode",
+    "ready_particle_momentum_frame",
+    "momentum_input_mode_policy",
 }
 
 
@@ -361,6 +370,16 @@ def attach_global_exit_position(row: dict[str, Any], *, spin: float, transform: 
     pz = finite_value(row, "pz")
     if px is None or py is None or pz is None:
         row["global_momentum_status"] = "GLOBAL_MOMENTUM_NOT_AVAILABLE"
+        row["momentum_input_mode"] = "unknown"
+        row["ready_particle_momentum_frame"] = "unknown"
+        row["momentum_input_mode_policy"] = "explicit_mode_required_for_photon_observer_camera"
+        return
+    momentum_norm = math.sqrt(px * px + py * py + pz * pz)
+    if not math.isfinite(momentum_norm) or momentum_norm <= 0.0:
+        row["global_momentum_status"] = "GLOBAL_MOMENTUM_INVALID"
+        row["momentum_input_mode"] = "unknown"
+        row["ready_particle_momentum_frame"] = "unknown"
+        row["momentum_input_mode_policy"] = "explicit_mode_required_for_photon_observer_camera"
         return
     sin_t = math.sin(theta)
     cos_t = math.cos(theta)
@@ -375,7 +394,21 @@ def attach_global_exit_position(row: dict[str, Any], *, spin: float, transform: 
     row["global_px"] = p_radial * er[0] + p_theta * etheta[0] + p_phi * ephi[0]
     row["global_py"] = p_radial * er[1] + p_theta * etheta[1] + p_phi * ephi[1]
     row["global_pz"] = p_radial * er[2] + p_theta * etheta[2] + p_phi * ephi[2]
-    row["global_momentum_status"] = "GLOBAL_MOMENTUM_ZAMO_SPATIAL_TRIAD"
+    if transform_name == "ZAMO_TETRAD_LOCAL_BOX":
+        row["global_momentum_status"] = "GLOBAL_MOMENTUM_ZAMO_SPATIAL_TRIAD"
+        row["momentum_input_mode"] = "zamo_tetrad"
+        row["ready_particle_momentum_frame"] = "ZAMO_TETRAD_LOCAL_BOX"
+        row["momentum_input_mode_policy"] = "explicit_zamo_tetrad_components"
+        # GEANT4 local-box convention: local z is +radial ZAMO,
+        # local x is +theta, and local y is +phi.
+        row["n_zamo_r"] = pz / momentum_norm
+        row["n_zamo_theta"] = px / momentum_norm
+        row["n_zamo_phi"] = py / momentum_norm
+    else:
+        row["global_momentum_status"] = "GLOBAL_MOMENTUM_LOCAL_CARTESIAN_DEBUG"
+        row["momentum_input_mode"] = "unknown"
+        row["ready_particle_momentum_frame"] = "unknown"
+        row["momentum_input_mode_policy"] = "explicit_mode_required_for_photon_observer_camera"
 
 
 def apply_geant4_local_rg_scale(row: dict[str, Any], cm_per_rg: float) -> None:
@@ -807,6 +840,15 @@ def aggregate(rows: list[dict[str, Any]], statuses: list[dict[str, Any]], args: 
     summary["ready_particles_with_zamo_tetrad_position"] = sum(
         1 for row in ready_rows if row.get("global_position_transform") == "ZAMO_TETRAD_LOCAL_BOX"
     )
+    summary["ready_particles_with_explicit_zamo_momentum"] = sum(
+        1 for row in ready_rows if row.get("momentum_input_mode") == "zamo_tetrad"
+    )
+    summary["ready_particle_momentum_frame"] = (
+        "ZAMO_TETRAD_LOCAL_BOX"
+        if summary["ready_particles_with_explicit_zamo_momentum"] == len(ready_rows) and ready_rows
+        else "mixed_or_unavailable"
+    )
+    summary["momentum_input_mode_policy"] = "explicit_per_ready_particle"
     summary["local_to_global_transform"] = args.local_to_global_transform
     summary["geant4_local_cm_per_rg"] = args.geant4_local_cm_per_rg
     summary["mbh_msun"] = args.mbh_msun
@@ -854,9 +896,12 @@ def write_reports(summary: dict[str, Any], statuses: list[dict[str, Any]], args:
         f"Max abs GEANT4 budget residual [GeV]: `{summary['max_abs_geant4_budget_residual_energy']:.12g}`.",
         f"Camera status: `{summary['camera_status']}`.",
         f"Local-to-global transform: `{summary.get('local_to_global_transform', '')}`.",
+        f"Ready-particle momentum frame: `{summary.get('ready_particle_momentum_frame', '')}`.",
+        f"Momentum input mode policy: `{summary.get('momentum_input_mode_policy', '')}`.",
         f"GEANT4 local cm per rg: `{summary.get('geant4_local_cm_per_rg', '')}`.",
         f"MBH_MSUN: `{summary.get('mbh_msun', '')}`.",
         f"Ready particles with ZAMO tetrad positions: `{summary.get('ready_particles_with_zamo_tetrad_position', 0)}`.",
+        f"Ready particles with explicit ZAMO momentum: `{summary.get('ready_particles_with_explicit_zamo_momentum', 0)}`.",
         "",
         "## Job Status",
         "",

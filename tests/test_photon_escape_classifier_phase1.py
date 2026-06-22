@@ -213,6 +213,27 @@ def test_ambiguous_generic_momentum_rejected(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"ambiguous px/py/pz was not rejected: {out_rows[0]}")
 
 
+def test_named_zamo_tetrad_direction_fields_accepted(binary: Path, tmp: Path) -> None:
+    row = photon_row(n_zamo_r=1.0, n_zamo_theta=0.0, n_zamo_phi=0.0)
+    row.pop("px")
+    row.pop("py")
+    row.pop("pz")
+    out_rows, _, _ = run_classifier(tmp, binary, [row])
+    if out_rows[0]["momentum_input_mode"] != "zamo_tetrad":
+        raise AssertionError(f"momentum_input_mode was not preserved: {out_rows[0]}")
+    if out_rows[0]["classification"] != "reaches_observer_sphere":
+        raise AssertionError(f"named ZAMO tetrad fields were not accepted: {out_rows[0]}")
+
+
+def test_unknown_momentum_input_mode_rejected(binary: Path, tmp: Path) -> None:
+    row = photon_row(momentum_input_mode="unknown")
+    out_rows, _, _ = run_classifier(tmp, binary, [row])
+    if out_rows[0]["classification"] == "reaches_observer_sphere":
+        raise AssertionError(f"unknown momentum_input_mode was accepted: {out_rows[0]}")
+    if out_rows[0]["failure_reason"] != "integration_failed_invalid_or_missing_momentum_input_mode":
+        raise AssertionError(f"unknown mode did not fail clearly: {out_rows[0]}")
+
+
 def test_global_boyer_lindquist_mode_accepted(binary: Path, tmp: Path) -> None:
     row = photon_row(momentum_input_mode="global_boyer_lindquist")
     row.pop("px")
@@ -1306,6 +1327,8 @@ def main() -> int:
             lambda: test_radial_outward_reaches_observer(binary, base / "outward"),
             lambda: test_radial_inward_captured(binary, base / "inward"),
             lambda: test_ambiguous_generic_momentum_rejected(binary, base / "ambiguous"),
+            lambda: test_named_zamo_tetrad_direction_fields_accepted(binary, base / "named_zamo"),
+            lambda: test_unknown_momentum_input_mode_rejected(binary, base / "unknown_mode"),
             lambda: test_global_boyer_lindquist_mode_accepted(binary, base / "global_bl"),
             lambda: test_invalid_null_momentum(binary, base / "invalid_null"),
             lambda: test_invariant_violation_can_fail(binary, base / "invariant"),

@@ -199,9 +199,9 @@ PhotonRecord parse_record(const std::string& line)
         record.pcov[2] = first_number(line, {"p_theta", "initial_p_theta"});
         record.pcov[3] = first_number(line, {"p_phi", "initial_p_phi"});
     } else if (record.momentum_input_mode == "zamo_tetrad") {
-        record.nr = first_number(line, {"n_r", "nr", "local_n_r"});
-        record.ntheta = first_number(line, {"n_theta", "ntheta", "local_n_theta"});
-        record.nphi = first_number(line, {"n_phi", "nphi", "local_n_phi"});
+        record.nr = first_number(line, {"n_zamo_r", "n_r", "nr", "local_n_r"});
+        record.ntheta = first_number(line, {"n_zamo_theta", "n_theta", "ntheta", "local_n_theta"});
+        record.nphi = first_number(line, {"n_zamo_phi", "n_phi", "nphi", "local_n_phi"});
         if (!std::isfinite(record.nr) || !std::isfinite(record.ntheta) || !std::isfinite(record.nphi)) {
             const double px = first_number(line, {"px", "px_gev"});
             const double py = first_number(line, {"py", "py_gev"});
