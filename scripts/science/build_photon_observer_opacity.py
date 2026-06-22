@@ -147,6 +147,37 @@ def medium_summary_counts(path: Path | None) -> dict[str, int]:
     return out
 
 
+def density_gray_medium_backend(provenance_path: Path | None, summary_path: Path | None) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    provenance = read_json_optional(provenance_path)
+    if provenance:
+        backend = str(provenance.get("medium_backend") or provenance.get("photon_medium_model") or "").strip()
+        if backend:
+            return backend, warnings
+    if summary_path is not None and summary_path.exists():
+        _, rows = read_csv(summary_path)
+        if rows:
+            backend = str(rows[0].get("photon_medium_model") or "").strip()
+            if backend:
+                warnings.append("medium backend inferred from medium summary because provenance did not provide medium_backend")
+                return backend, warnings
+    warnings.append("medium backend could not be determined")
+    return "unknown_medium", warnings
+
+
+def opacity_model_for_mode(mode: str, medium_backend: str = "unknown_medium") -> str:
+    if mode == "vacuum":
+        return "vacuum_no_absorption"
+    if mode == "constant_alpha_path":
+        return "constant_alpha_per_rg"
+    if mode == "density_gray_toy":
+        safe_backend = medium_backend.strip() or "unknown_medium"
+        if safe_backend in {"none", "unknown", "unknown_medium"}:
+            return "density_gray_toy_unknown_medium"
+        return f"density_gray_toy_{safe_backend}"
+    return "none"
+
+
 def medium_tau_by_photon_id(
     path: Path | None,
     *,
@@ -279,6 +310,7 @@ def build_opacity_rows(
     *,
     mode: str,
     alpha_const_per_rg: float,
+    model: str,
     density_tau_by_path: dict[str, dict[str, float]] | None = None,
     n_paths_excluded_truncated: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -289,13 +321,6 @@ def build_opacity_rows(
     survivals: list[float] = []
     total_observed = 0.0
     total_attenuated = 0.0
-    model = (
-        "vacuum_no_absorption"
-        if mode == "vacuum"
-        else "constant_alpha_per_rg"
-        if mode == "constant_alpha_path"
-        else "density_gray_toy_analytic_torus"
-    )
     integration_method = (
         "vacuum_identity"
         if mode == "vacuum"
@@ -402,20 +427,20 @@ def validate_opacity_outputs(rows: list[dict[str, Any]], *, mode: str, alpha_con
             raise ValueError(f"vacuum identity failed at row {index}")
 
 
-def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, created_outputs: bool) -> None:
+def write_provenance(
+    args: argparse.Namespace,
+    summary: dict[str, Any],
+    *,
+    created_outputs: bool,
+    model: str | None = None,
+    medium_backend: str = "none",
+    medium_backend_warnings: list[str] | None = None,
+) -> None:
     absorption_applied = (
         (args.photon_opacity_mode == "constant_alpha_path" and float(args.photon_constant_alpha_per_rg) > 0.0)
         or (args.photon_opacity_mode == "density_gray_toy" and float(args.photon_density_gray_kappa_per_rg_per_gcm3) > 0.0)
     )
-    model = (
-        "vacuum_no_absorption"
-        if args.photon_opacity_mode == "vacuum"
-        else "constant_alpha_per_rg"
-        if args.photon_opacity_mode == "constant_alpha_path"
-        else "density_gray_toy_analytic_torus"
-        if args.photon_opacity_mode == "density_gray_toy"
-        else "none"
-    )
+    model = model or opacity_model_for_mode(args.photon_opacity_mode, medium_backend)
     toy_mode = args.photon_opacity_mode == "density_gray_toy"
     provenance = {
         "phase": "photon_observer_camera_opacity",
@@ -436,6 +461,8 @@ def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, creat
         "path_sampling_used": False,
         "path_sampling_audit_available": bool(args.path_summary_csv and args.path_summary_csv.exists()),
         "medium_lookup_used": toy_mode,
+        "medium_backend": medium_backend if toy_mode else "none",
+        "medium_backend_warnings": medium_backend_warnings or [],
         "medium_input_path_mode": "compressed_complete_paths" if toy_mode else "none",
         "truncated_path_policy": args.photon_opacity_truncated_path_policy,
         "n_paths_excluded_truncated": summary.get("n_paths_excluded_truncated", 0),
@@ -458,7 +485,7 @@ def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, creat
             "path sampling is an audit artifact and is not required for production opacity integration",
             "no pair production",
             "no Compton scattering",
-            "density_gray_toy uses analytic_torus medium lookup only" if toy_mode else "no medium lookup",
+            f"density_gray_toy uses {medium_backend} medium lookup" if toy_mode else "no medium lookup",
             "density_gray_toy is not physical radiative transfer" if toy_mode else "no rho/T/Ye/u_fluid",
             "no full radiative transfer",
             "no detector response",
@@ -472,6 +499,14 @@ def write_provenance(args: argparse.Namespace, summary: dict[str, Any], *, creat
 def main() -> int:
     args = parse_args()
     try:
+        medium_backend = "none"
+        medium_backend_warnings: list[str] = []
+        if args.photon_opacity_mode == "density_gray_toy":
+            medium_backend, medium_backend_warnings = density_gray_medium_backend(
+                args.medium_compressed_provenance,
+                args.medium_compressed_summary_csv,
+            )
+        model = opacity_model_for_mode(args.photon_opacity_mode, medium_backend)
         if not math.isfinite(float(args.photon_constant_alpha_per_rg)) or float(args.photon_constant_alpha_per_rg) < 0.0:
             raise ValueError("photon_constant_alpha_per_rg must be finite and non-negative")
         if not math.isfinite(float(args.photon_density_gray_kappa_per_rg_per_gcm3)) or float(args.photon_density_gray_kappa_per_rg_per_gcm3) < 0.0:
@@ -494,6 +529,9 @@ def main() -> int:
                     "total_attenuated_observed_energy_gev": "",
                 },
                 created_outputs=False,
+                model=model,
+                medium_backend=medium_backend,
+                medium_backend_warnings=medium_backend_warnings,
             )
             print("Photon observer opacity disabled; no attenuated camera file written")
             return 0
@@ -522,6 +560,7 @@ def main() -> int:
             rows,
             mode=args.photon_opacity_mode,
             alpha_const_per_rg=float(args.photon_constant_alpha_per_rg),
+            model=model,
             density_tau_by_path=density_tau,
             n_paths_excluded_truncated=n_excluded,
         )
@@ -538,7 +577,14 @@ def main() -> int:
                 output_fields.append(field)
         write_csv_rows(args.output_csv, output_fields, output_rows)
         write_csv_rows(args.summary_csv, SUMMARY_FIELDS, [summary])
-        write_provenance(args, summary, created_outputs=True)
+        write_provenance(
+            args,
+            summary,
+            created_outputs=True,
+            model=model,
+            medium_backend=medium_backend,
+            medium_backend_warnings=medium_backend_warnings,
+        )
     except Exception as exc:
         print(f"Photon observer opacity failed: {exc}", file=sys.stderr)
         return 2

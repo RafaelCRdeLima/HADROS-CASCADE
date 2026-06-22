@@ -134,7 +134,13 @@ def write_path_summary(path: Path) -> None:
     )
 
 
-def write_medium_compressed(tmp: Path, *, include_truncated: bool = True, e_gamma_second: float = 2.0) -> tuple[Path, Path, Path]:
+def write_medium_compressed(
+    tmp: Path,
+    *,
+    include_truncated: bool = True,
+    e_gamma_second: float = 2.0,
+    medium_backend: str = "analytic_torus",
+) -> tuple[Path, Path, Path]:
     medium = tmp / "photon_observer_medium_compressed_segments.jsonl"
     summary = tmp / "photon_observer_medium_compressed_summary.csv"
     provenance = tmp / "photon_observer_medium_compressed_provenance.json"
@@ -231,7 +237,7 @@ def write_medium_compressed(tmp: Path, *, include_truncated: bool = True, e_gamm
         ],
         [
             {
-                "photon_medium_model": "analytic_torus",
+                "photon_medium_model": medium_backend,
                 "medium_input_path_mode": "compressed_complete_paths",
                 "truncated_path_policy": "exclude" if include_truncated else "fail",
                 "n_medium_queries": len(rows),
@@ -247,6 +253,8 @@ def write_medium_compressed(tmp: Path, *, include_truncated: bool = True, e_gamm
         json.dumps(
             {
                 "medium_lookup_applied": True,
+                "medium_backend": medium_backend,
+                "photon_medium_model": medium_backend,
                 "medium_input_path_mode": "compressed_complete_paths",
                 "truncated_path_policy": "exclude" if include_truncated else "fail",
                 "no_opacity_applied": True,
@@ -271,6 +279,7 @@ def run_opacity(
     truncated_policy: str = "fail",
     include_medium: bool = False,
     include_truncated_medium: bool = True,
+    medium_backend: str = "analytic_torus",
 ) -> subprocess.CompletedProcess[str]:
     redshift = tmp / "photon_observer_camera_redshift.csv"
     write_redshift(redshift)
@@ -308,7 +317,11 @@ def run_opacity(
             "separate_file",
         ]
     if include_medium:
-        medium, medium_summary, medium_provenance = write_medium_compressed(tmp, include_truncated=include_truncated_medium)
+        medium, medium_summary, medium_provenance = write_medium_compressed(
+            tmp,
+            include_truncated=include_truncated_medium,
+            medium_backend=medium_backend,
+        )
         command.extend(
             [
                 "--medium-compressed-jsonl",
@@ -537,6 +550,40 @@ def test_density_gray_toy_constant_rho_tau() -> None:
         summary = read_csv(tmp / "photon_observer_opacity_summary.csv")[0]
         if int(summary["n_paths_used"]) != 2 or int(summary["n_paths_excluded_truncated"]) != 1:
             raise AssertionError(summary)
+
+
+def test_density_gray_toy_model_label_tracks_medium_backend() -> None:
+    cases = {
+        "analytic_torus": "density_gray_toy_analytic_torus",
+        "uribe_radial_scalar": "density_gray_toy_uribe_radial_scalar",
+    }
+    for backend, expected_model in cases.items():
+        with tempfile.TemporaryDirectory(prefix=f"hadros_photon_opacity_label_{backend}_") as tmp_name:
+            tmp = Path(tmp_name)
+            completed = run_opacity(
+                tmp,
+                mode="density_gray_toy",
+                kappa=0.1,
+                truncated_policy="exclude",
+                include_medium=True,
+                medium_backend=backend,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(completed.stderr)
+            rows = read_csv(tmp / "photon_observer_camera_attenuated.csv")
+            summary = read_csv(tmp / "photon_observer_opacity_summary.csv")[0]
+            provenance = json.loads((tmp / "photon_observer_opacity_provenance.json").read_text(encoding="utf-8"))
+        valid = [row for row in rows if row["photon_opacity_status"] == "valid_density_gray_toy"]
+        if not valid:
+            raise AssertionError(rows)
+        if any(row["photon_opacity_model"] != expected_model for row in valid):
+            raise AssertionError(valid)
+        if summary["photon_opacity_model"] != expected_model:
+            raise AssertionError(summary)
+        if provenance["photon_opacity_model"] != expected_model:
+            raise AssertionError(provenance)
+        if provenance["medium_backend"] != backend:
+            raise AssertionError(provenance)
 
 
 def test_density_gray_toy_energy_exponent_uses_fluid_energy() -> None:
@@ -787,6 +834,7 @@ if __name__ == "__main__":
     test_unsupported_opacity_mode_fails()
     test_density_gray_toy_kappa_zero_matches_vacuum_for_complete_subset()
     test_density_gray_toy_constant_rho_tau()
+    test_density_gray_toy_model_label_tracks_medium_backend()
     test_density_gray_toy_energy_exponent_uses_fluid_energy()
     test_density_gray_toy_truncated_fail_policy_fails()
     test_density_gray_toy_requires_complete_paths()
