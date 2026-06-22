@@ -94,6 +94,19 @@ def classifier_command(
     path_sample_stride: str = "1",
     path_sample_max_rows_per_photon: str = "10000",
     path_sampling_require_validation: str = "true",
+    photon_opacity_mode: str = "disabled",
+    gamma_gamma_step_stride: str = "1",
+    gamma_gamma_max_steps_per_photon: str = "200000",
+    gamma_gamma_energy_grid_min_gev: str = "1e-6",
+    gamma_gamma_energy_grid_max_gev: str = "1e6",
+    gamma_gamma_temperature_grid_min_mev: str = "1e-3",
+    gamma_gamma_temperature_grid_max_mev: str = "10.0",
+    gamma_gamma_n_energy_bins: str = "4",
+    gamma_gamma_n_temperature_bins: str = "4",
+    gamma_gamma_n_epsilon_quad: str = "4",
+    gamma_gamma_n_mu_quad: str = "4",
+    gamma_gamma_max_table_cells: str = "16",
+    gamma_gamma_fail_on_invalid: str = "true",
 ) -> tuple[list[str], Path, Path, Path]:
     tmp.mkdir(parents=True, exist_ok=True)
     input_path = tmp / "geant4_ready_particles.jsonl"
@@ -120,6 +133,7 @@ def classifier_command(
         "--path-samples-provenance", str(path_samples_provenance),
         "--backend", str(binary),
         "--spin", "0.0",
+        "--black-hole-mass-msun", "3.0",
         "--observer-radius-rg", "20.0",
         "--max-radius-rg", "40.0",
         "--photon-geodesic-step-rg", "0.02",
@@ -136,6 +150,27 @@ def classifier_command(
         "--photon-path-sample-max-rows-per-photon", path_sample_max_rows_per_photon,
         "--photon-path-sampling-output-format", "jsonl",
         "--photon-path-sampling-require-validation", path_sampling_require_validation,
+        "--photon-opacity-mode", photon_opacity_mode,
+        "--photon-gamma-gamma-target-field-model", "local_blackbody_isotropic",
+        "--photon-gamma-gamma-dilution-factor", "1.0",
+        "--photon-gamma-gamma-energy-grid-min-gev", gamma_gamma_energy_grid_min_gev,
+        "--photon-gamma-gamma-energy-grid-max-gev", gamma_gamma_energy_grid_max_gev,
+        "--photon-gamma-gamma-temperature-grid-min-mev", gamma_gamma_temperature_grid_min_mev,
+        "--photon-gamma-gamma-temperature-grid-max-mev", gamma_gamma_temperature_grid_max_mev,
+        "--photon-gamma-gamma-n-energy-bins", gamma_gamma_n_energy_bins,
+        "--photon-gamma-gamma-n-temperature-bins", gamma_gamma_n_temperature_bins,
+        "--photon-gamma-gamma-n-epsilon-quad", gamma_gamma_n_epsilon_quad,
+        "--photon-gamma-gamma-n-mu-quad", gamma_gamma_n_mu_quad,
+        "--photon-gamma-gamma-max-table-cells", gamma_gamma_max_table_cells,
+        "--photon-gamma-gamma-max-steps-per-photon", gamma_gamma_max_steps_per_photon,
+        "--photon-gamma-gamma-step-stride", gamma_gamma_step_stride,
+        "--photon-gamma-gamma-alpha-floor-cm-inv", "1e-300",
+        "--photon-gamma-gamma-table-direct-integral-tolerance", "0.2",
+        "--photon-gamma-gamma-fail-on-invalid", gamma_gamma_fail_on_invalid,
+        "--photon-gamma-gamma-requires-medium", "true",
+        "--photon-medium-model", "analytic_torus",
+        "--photon-medium-torus-temperature-mev", "1.0",
+        "--photon-medium-torus-fluid-frame", "zamo",
     ]
     return cmd, output_jsonl, summary_csv, provenance
 
@@ -148,6 +183,12 @@ def run_classifier(
     invariant_tolerance: str = "1e-6",
     horizon_tolerance: str = "1e-6",
     fail_on_invariant: str = "true",
+    photon_opacity_mode: str = "disabled",
+    gamma_gamma_step_stride: str = "1",
+    gamma_gamma_max_steps_per_photon: str = "200000",
+    gamma_gamma_energy_grid_min_gev: str = "1e-6",
+    gamma_gamma_energy_grid_max_gev: str = "1e6",
+    gamma_gamma_fail_on_invalid: str = "true",
 ) -> tuple[list[dict[str, object]], dict[str, str], dict[str, object]]:
     cmd, output_jsonl, summary_csv, provenance = classifier_command(
         tmp,
@@ -156,6 +197,12 @@ def run_classifier(
         invariant_tolerance=invariant_tolerance,
         horizon_tolerance=horizon_tolerance,
         fail_on_invariant=fail_on_invariant,
+        photon_opacity_mode=photon_opacity_mode,
+        gamma_gamma_step_stride=gamma_gamma_step_stride,
+        gamma_gamma_max_steps_per_photon=gamma_gamma_max_steps_per_photon,
+        gamma_gamma_energy_grid_min_gev=gamma_gamma_energy_grid_min_gev,
+        gamma_gamma_energy_grid_max_gev=gamma_gamma_energy_grid_max_gev,
+        gamma_gamma_fail_on_invalid=gamma_gamma_fail_on_invalid,
     )
     subprocess.run(cmd, cwd=ROOT, check=True)
     out_rows = [json.loads(line) for line in output_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -183,6 +230,137 @@ def photon_row(**updates: object) -> dict[str, object]:
     }
     row.update(updates)
     return row
+
+
+SIGMA_T_CM2 = 6.6524587321e-25
+ELECTRON_MASS_GEV = 0.00051099895
+ERG_PER_GEV = 0.001602176634
+PLANCK_ERG_S = 6.62607015e-27
+SPEED_OF_LIGHT_CM_S = 2.99792458e10
+RG_SUN_CM = 1.4766250385e5
+
+
+def breit_wheeler_sigma_test(s_dimensionless: float) -> float:
+    if not math.isfinite(s_dimensionless) or s_dimensionless < 1.0:
+        return 0.0
+    beta2 = max(0.0, 1.0 - 1.0 / s_dimensionless)
+    beta = math.sqrt(beta2)
+    if not (beta > 0.0) or beta >= 1.0:
+        return 0.0
+    beta4 = beta2 * beta2
+    bracket = (3.0 - beta4) * math.log((1.0 + beta) / (1.0 - beta)) - 2.0 * beta * (2.0 - beta2)
+    return (3.0 / 16.0) * SIGMA_T_CM2 * (1.0 - beta2) * bracket
+
+
+def blackbody_number_density_per_gev_test(epsilon_gev: float, temperature_mev: float) -> float:
+    if epsilon_gev <= 0.0 or temperature_mev <= 0.0:
+        return 0.0
+    kT_gev = temperature_mev * 1.0e-3
+    x = epsilon_gev / kT_gev
+    if x > 700.0:
+        return 0.0
+    coeff = 8.0 * math.pi * ERG_PER_GEV**3 / (PLANCK_ERG_S * SPEED_OF_LIGHT_CM_S) ** 3
+    return coeff * epsilon_gev * epsilon_gev / math.expm1(x)
+
+
+def integrate_blackbody_number_density_test(temperature_mev: float, n_bins: int = 40000) -> float:
+    kT_gev = temperature_mev * 1.0e-3
+    log_min = math.log(kT_gev * 1.0e-8)
+    dlog = (math.log(kT_gev * 100.0) - log_min) / n_bins
+    total = 0.0
+    for index in range(n_bins):
+        epsilon = math.exp(log_min + (index + 0.5) * dlog)
+        total += blackbody_number_density_per_gev_test(epsilon, temperature_mev) * epsilon * dlog
+    return total
+
+
+def gamma_gamma_alpha_direct_test(energy_gev: float, temperature_mev: float, *, n_eps: int = 256, n_mu: int = 128) -> float:
+    if energy_gev <= 0.0 or temperature_mev <= 0.0:
+        return 0.0
+    kT_gev = temperature_mev * 1.0e-3
+    log_min = math.log(max(1.0e-30, kT_gev * 1.0e-6))
+    dlog = (math.log(kT_gev * 100.0) - log_min) / n_eps
+    dmu = 2.0 / n_mu
+    alpha = 0.0
+    for ieps in range(n_eps):
+        epsilon = math.exp(log_min + (ieps + 0.5) * dlog)
+        deps = epsilon * dlog
+        n_epsilon = blackbody_number_density_per_gev_test(epsilon, temperature_mev)
+        angular = 0.0
+        for imu in range(n_mu):
+            mu = -1.0 + (imu + 0.5) * dmu
+            one_minus_mu = 1.0 - mu
+            s_value = energy_gev * epsilon * one_minus_mu / (2.0 * ELECTRON_MASS_GEV * ELECTRON_MASS_GEV)
+            angular += 0.5 * one_minus_mu * breit_wheeler_sigma_test(s_value) * dmu
+        alpha += n_epsilon * angular * deps
+    return alpha
+
+
+def gamma_gamma_log_table_alpha_test(
+    energy_gev: float,
+    temperature_mev: float,
+    *,
+    n_energy: int = 24,
+    n_temperature: int = 24,
+    n_eps: int = 128,
+    n_mu: int = 64,
+    alpha_floor: float = 1.0e-300,
+) -> float:
+    log_e_min = math.log(1.0e-3)
+    log_e_max = math.log(1.0e2)
+    log_t_min = math.log(1.0e-1)
+    log_t_max = math.log(3.0)
+    dlog_e = (log_e_max - log_e_min) / (n_energy - 1)
+    dlog_t = (log_t_max - log_t_min) / (n_temperature - 1)
+    values: list[list[float]] = []
+    for jt in range(n_temperature):
+        row: list[float] = []
+        temp = math.exp(log_t_min + jt * dlog_t)
+        for ie in range(n_energy):
+            energy = math.exp(log_e_min + ie * dlog_e)
+            row.append(gamma_gamma_alpha_direct_test(energy, temp, n_eps=n_eps, n_mu=n_mu))
+        values.append(row)
+    le = math.log(energy_gev)
+    lt = math.log(temperature_mev)
+    if not (log_e_min <= le <= log_e_max and log_t_min <= lt <= log_t_max):
+        raise AssertionError("test point outside table")
+    xe = (le - log_e_min) / dlog_e
+    xt = (lt - log_t_min) / dlog_t
+    i0 = min(max(int(math.floor(xe)), 0), n_energy - 2)
+    j0 = min(max(int(math.floor(xt)), 0), n_temperature - 2)
+    fe = min(max(xe - i0, 0.0), 1.0)
+    ft = min(max(xt - j0, 0.0), 1.0)
+    a00 = math.log(max(0.0, values[j0][i0]) + alpha_floor)
+    a10 = math.log(max(0.0, values[j0][i0 + 1]) + alpha_floor)
+    a01 = math.log(max(0.0, values[j0 + 1][i0]) + alpha_floor)
+    a11 = math.log(max(0.0, values[j0 + 1][i0 + 1]) + alpha_floor)
+    a0 = a00 * (1.0 - fe) + a10 * fe
+    a1 = a01 * (1.0 - fe) + a11 * fe
+    return max(0.0, math.exp(a0 * (1.0 - ft) + a1 * ft) - alpha_floor)
+
+
+def add_gamma_gamma_config_defaults(config: dict[str, object]) -> None:
+    config.update(
+        {
+            "photon_gamma_gamma_target_field_model": "local_blackbody_isotropic",
+            "photon_gamma_gamma_dilution_factor": 1.0,
+            "photon_gamma_gamma_energy_grid_min_gev": 1.0e-6,
+            "photon_gamma_gamma_energy_grid_max_gev": 1.0e6,
+            "photon_gamma_gamma_temperature_grid_min_mev": 1.0e-3,
+            "photon_gamma_gamma_temperature_grid_max_mev": 10.0,
+            "photon_gamma_gamma_n_energy_bins": 4,
+            "photon_gamma_gamma_n_temperature_bins": 4,
+            "photon_gamma_gamma_n_epsilon_quad": 4,
+            "photon_gamma_gamma_n_mu_quad": 4,
+            "photon_gamma_gamma_max_table_cells": 16,
+            "photon_gamma_gamma_max_steps_per_photon": 200000,
+            "photon_gamma_gamma_step_stride": 1,
+            "photon_gamma_gamma_alpha_floor_cm_inv": 1.0e-300,
+            "photon_gamma_gamma_table_direct_integral_tolerance": 0.2,
+            "photon_gamma_gamma_fail_on_invalid": True,
+            "photon_gamma_gamma_requires_medium": True,
+        }
+    )
 
 
 def test_pdg_filtering(binary: Path, tmp: Path) -> None:
@@ -214,6 +392,113 @@ def test_radial_outward_reaches_observer(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"crossing momentum was not marked available: {out_rows[0]}")
     if "observed_energy_gev" in out_rows[0]:
         raise AssertionError(f"Phase 1 unexpectedly emitted observed_energy_gev: {out_rows[0]}")
+
+
+def test_gamma_gamma_step_stride_reduces_steps_used(binary: Path, tmp: Path) -> None:
+    rows = [photon_row()]
+    out_stride1, _, prov1 = run_classifier(
+        tmp / "gamma_stride1",
+        binary,
+        rows,
+        photon_opacity_mode="gamma_gamma_local_blackbody",
+        gamma_gamma_step_stride="1",
+    )
+    out_stride4, _, prov4 = run_classifier(
+        tmp / "gamma_stride4",
+        binary,
+        rows,
+        photon_opacity_mode="gamma_gamma_local_blackbody",
+        gamma_gamma_step_stride="4",
+    )
+    if prov1["opacity_is_diagnostic_model"] is not True or prov4["opacity_is_diagnostic_model"] is not True:
+        raise AssertionError((prov1, prov4))
+    steps1 = int(out_stride1[0]["gamma_gamma_steps_used"])
+    steps4 = int(out_stride4[0]["gamma_gamma_steps_used"])
+    if not (steps1 > steps4 > 0):
+        raise AssertionError((steps1, steps4, out_stride1[0], out_stride4[0]))
+    if out_stride1[0]["gamma_gamma_opacity_status"] != "valid_diagnostic_gamma_gamma":
+        raise AssertionError(out_stride1[0])
+    if prov4["gamma_gamma_stride_is_subsampling"] is not True:
+        raise AssertionError(prov4)
+    if prov4["quantitative_tau_requires_stride_1"] is not True:
+        raise AssertionError(prov4)
+
+
+def test_gamma_gamma_no_silent_alpha_table_clamp(binary: Path, tmp: Path) -> None:
+    out_rows, _, prov = run_classifier(
+        tmp / "gamma_outside_table",
+        binary,
+        [photon_row(energy_gev=10.0)],
+        photon_opacity_mode="gamma_gamma_local_blackbody",
+        gamma_gamma_energy_grid_min_gev="1e-6",
+        gamma_gamma_energy_grid_max_gev="1e-3",
+        gamma_gamma_fail_on_invalid="false",
+    )
+    row = out_rows[0]
+    if row["gamma_gamma_opacity_status"] != "outside_alpha_table_range":
+        raise AssertionError(row)
+    if prov["no_silent_clamp"] is not True:
+        raise AssertionError(prov)
+    if prov["alpha_table_extrapolation_policy"] != "fail_or_status":
+        raise AssertionError(prov)
+
+
+def test_gamma_gamma_max_steps_guard(binary: Path, tmp: Path) -> None:
+    out_rows, _, _ = run_classifier(
+        tmp / "gamma_max_steps",
+        binary,
+        [photon_row()],
+        photon_opacity_mode="gamma_gamma_local_blackbody",
+        gamma_gamma_max_steps_per_photon="1",
+    )
+    row = out_rows[0]
+    if row["gamma_gamma_opacity_status"] != "truncated_diagnostic_steps":
+        raise AssertionError(row)
+    if row["classification"] != "integration_failed_gamma_gamma_opacity":
+        raise AssertionError(row)
+
+
+def test_breit_wheeler_cross_section_threshold_and_peak() -> None:
+    if breit_wheeler_sigma_test(0.999999) != 0.0:
+        raise AssertionError("Breit-Wheeler cross-section should vanish below threshold")
+    best_sigma = 0.0
+    best_s = 0.0
+    for index in range(10000):
+        s_value = 10.0 ** (-4.0 + index * 8.0 / 9999.0)
+        sigma = breit_wheeler_sigma_test(s_value)
+        if sigma > best_sigma:
+            best_sigma = sigma
+            best_s = s_value
+    peak_ratio = best_sigma / SIGMA_T_CM2
+    if abs(peak_ratio - 0.2556) > 0.01:
+        raise AssertionError((best_s, peak_ratio))
+
+
+def test_blackbody_number_density_normalization() -> None:
+    temperature_mev = 1.0
+    numerical = integrate_blackbody_number_density_test(temperature_mev)
+    temperature_k = temperature_mev * 1.0e6 * 11604.518121550082
+    analytic = 20.29 * temperature_k**3
+    if abs(numerical / analytic - 1.0) > 5.0e-3:
+        raise AssertionError((numerical, analytic, numerical / analytic))
+
+
+def test_gamma_gamma_log_table_matches_direct_integral() -> None:
+    for energy_gev, temperature_mev in [(0.1, 0.3), (1.0, 1.0), (10.0, 1.5)]:
+        direct = gamma_gamma_alpha_direct_test(energy_gev, temperature_mev, n_eps=256, n_mu=128)
+        table = gamma_gamma_log_table_alpha_test(energy_gev, temperature_mev)
+        denom = max(abs(direct), 1.0e-300)
+        if abs(table - direct) / denom > 0.2:
+            raise AssertionError((energy_gev, temperature_mev, direct, table, abs(table - direct) / denom))
+
+
+def test_gamma_gamma_interpolation_varies_inside_same_cell() -> None:
+    alpha_low = gamma_gamma_log_table_alpha_test(0.8, 1.0)
+    alpha_high = gamma_gamma_log_table_alpha_test(0.95, 1.0)
+    if alpha_low <= 0.0 or alpha_high <= 0.0:
+        raise AssertionError((alpha_low, alpha_high))
+    if abs(alpha_low - alpha_high) / max(alpha_low, alpha_high) < 1.0e-3:
+        raise AssertionError((alpha_low, alpha_high))
 
 
 def test_path_sampling_disabled_creates_no_outputs(binary: Path, tmp: Path) -> None:
@@ -469,6 +754,23 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_density_gray_kappa_per_rg_per_gcm3",
         "photon_density_gray_energy_exponent",
         "photon_density_gray_reference_energy_gev",
+        "photon_gamma_gamma_target_field_model",
+        "photon_gamma_gamma_dilution_factor",
+        "photon_gamma_gamma_energy_grid_min_gev",
+        "photon_gamma_gamma_energy_grid_max_gev",
+        "photon_gamma_gamma_temperature_grid_min_mev",
+        "photon_gamma_gamma_temperature_grid_max_mev",
+        "photon_gamma_gamma_n_energy_bins",
+        "photon_gamma_gamma_n_temperature_bins",
+        "photon_gamma_gamma_n_epsilon_quad",
+        "photon_gamma_gamma_n_mu_quad",
+        "photon_gamma_gamma_max_table_cells",
+        "photon_gamma_gamma_max_steps_per_photon",
+        "photon_gamma_gamma_step_stride",
+        "photon_gamma_gamma_alpha_floor_cm_inv",
+        "photon_gamma_gamma_table_direct_integral_tolerance",
+        "photon_gamma_gamma_fail_on_invalid",
+        "photon_gamma_gamma_requires_medium",
         "photon_opacity_truncated_path_policy",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
@@ -492,6 +794,14 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_medium_torus_temperature_mev",
         "photon_medium_torus_Ye",
         "photon_medium_torus_fluid_frame",
+        "uribe_radial_density_path",
+        "uribe_radial_temperature_path",
+        "uribe_radial_ye_path",
+        "uribe_radial_coordinate",
+        "uribe_radial_interpolation_mode",
+        "uribe_radial_out_of_bounds_policy",
+        "uribe_radial_grid_anomaly_policy",
+        "uribe_fluid_frame_fallback",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -583,6 +893,14 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_medium_torus_temperature_mev": 1.0,
         "photon_medium_torus_Ye": 0.5,
         "photon_medium_torus_fluid_frame": "zamo",
+        "uribe_radial_density_path": "../HADROS/data/uribe/disk-mass-density.dat",
+        "uribe_radial_temperature_path": "../HADROS/data/uribe/disk-temp.dat",
+        "uribe_radial_ye_path": "../HADROS/data/uribe/disk-electron-fraction.dat",
+        "uribe_radial_coordinate": "uribe_xr_squared_rg",
+        "uribe_radial_interpolation_mode": "linear",
+        "uribe_radial_out_of_bounds_policy": "fail",
+        "uribe_radial_grid_anomaly_policy": "fail",
+        "uribe_fluid_frame_fallback": "fail",
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -591,11 +909,13 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_camera_center_phi_rad": 0.0,
         "photon_camera_clipping_mode": "keep_outside_fov",
     }
+    add_gamma_gamma_config_defaults(config)
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     step = next(item for item in steps if item.name == "photon_escape_classifier")
     command = step.command
     expected_pairs = {
         "--photon-max-geodesic-steps": "1234",
+        "--black-hole-mass-msun": "3.0",
         "--photon-geodesic-step-rg": "0.03",
         "--photon-min-energy-gev": "2.0",
         "--photon-horizon-crossing-tolerance-rg": "1e-07",
@@ -704,6 +1024,14 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_medium_torus_temperature_mev": 1.0,
         "photon_medium_torus_Ye": 0.5,
         "photon_medium_torus_fluid_frame": "zamo",
+        "uribe_radial_density_path": "../HADROS/data/uribe/disk-mass-density.dat",
+        "uribe_radial_temperature_path": "../HADROS/data/uribe/disk-temp.dat",
+        "uribe_radial_ye_path": "../HADROS/data/uribe/disk-electron-fraction.dat",
+        "uribe_radial_coordinate": "uribe_xr_squared_rg",
+        "uribe_radial_interpolation_mode": "linear",
+        "uribe_radial_out_of_bounds_policy": "fail",
+        "uribe_radial_grid_anomaly_policy": "fail",
+        "uribe_fluid_frame_fallback": "fail",
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -712,6 +1040,7 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_camera_center_phi_rad": 0.0,
         "photon_camera_clipping_mode": "keep_outside_fov",
     }
+    add_gamma_gamma_config_defaults(config)
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     names = [step.name for step in steps]
     if "photon_escape_classifier" not in names or "photon_observer_sphere_hit_map" not in names:
@@ -813,6 +1142,14 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "photon_medium_torus_temperature_mev": 1.0,
         "photon_medium_torus_Ye": 0.5,
         "photon_medium_torus_fluid_frame": "zamo",
+        "uribe_radial_density_path": "../HADROS/data/uribe/disk-mass-density.dat",
+        "uribe_radial_temperature_path": "../HADROS/data/uribe/disk-temp.dat",
+        "uribe_radial_ye_path": "../HADROS/data/uribe/disk-electron-fraction.dat",
+        "uribe_radial_coordinate": "uribe_xr_squared_rg",
+        "uribe_radial_interpolation_mode": "linear",
+        "uribe_radial_out_of_bounds_policy": "fail",
+        "uribe_radial_grid_anomaly_policy": "fail",
+        "uribe_fluid_frame_fallback": "fail",
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -821,6 +1158,7 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "photon_camera_center_phi_rad": 0.25,
         "photon_camera_clipping_mode": "keep_outside_fov",
     }
+    add_gamma_gamma_config_defaults(config)
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     names = [step.name for step in steps]
     expected_order = [
@@ -935,6 +1273,14 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
         "photon_medium_torus_temperature_mev": 1.0,
         "photon_medium_torus_Ye": 0.5,
         "photon_medium_torus_fluid_frame": "zamo",
+        "uribe_radial_density_path": "../HADROS/data/uribe/disk-mass-density.dat",
+        "uribe_radial_temperature_path": "../HADROS/data/uribe/disk-temp.dat",
+        "uribe_radial_ye_path": "../HADROS/data/uribe/disk-electron-fraction.dat",
+        "uribe_radial_coordinate": "uribe_xr_squared_rg",
+        "uribe_radial_interpolation_mode": "linear",
+        "uribe_radial_out_of_bounds_policy": "fail",
+        "uribe_radial_grid_anomaly_policy": "fail",
+        "uribe_fluid_frame_fallback": "fail",
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -943,6 +1289,7 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
         "photon_camera_center_phi_rad": 0.25,
         "photon_camera_clipping_mode": "keep_outside_fov",
     }
+    add_gamma_gamma_config_defaults(config)
     steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     names = [step.name for step in steps]
     expected_order = [
@@ -1048,6 +1395,14 @@ def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) ->
         "photon_medium_torus_temperature_mev": 1.0,
         "photon_medium_torus_Ye": 0.5,
         "photon_medium_torus_fluid_frame": "zamo",
+        "uribe_radial_density_path": "../HADROS/data/uribe/disk-mass-density.dat",
+        "uribe_radial_temperature_path": "../HADROS/data/uribe/disk-temp.dat",
+        "uribe_radial_ye_path": "../HADROS/data/uribe/disk-electron-fraction.dat",
+        "uribe_radial_coordinate": "uribe_xr_squared_rg",
+        "uribe_radial_interpolation_mode": "linear",
+        "uribe_radial_out_of_bounds_policy": "fail",
+        "uribe_radial_grid_anomaly_policy": "fail",
+        "uribe_fluid_frame_fallback": "fail",
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -1056,6 +1411,7 @@ def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) ->
         "photon_camera_center_phi_rad": 0.25,
         "photon_camera_clipping_mode": "keep_outside_fov",
     }
+    add_gamma_gamma_config_defaults(config)
     try:
         final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
     except ValueError as exc:
@@ -1069,6 +1425,7 @@ def test_wrapper_has_no_physical_defaults() -> None:
     text = (ROOT / "scripts/science/run_kerr_photon_escape_classifier.py").read_text(encoding="utf-8")
     forbidden = [
         'parser.add_argument("--spin", default=',
+        'parser.add_argument("--black-hole-mass-msun", default=',
         'parser.add_argument("--observer-radius-rg", default=',
         'parser.add_argument("--max-radius-rg", default=',
         'parser.add_argument("--photon-geodesic-step-rg", default=',
@@ -1842,6 +2199,13 @@ def main() -> int:
         tests = [
             lambda: test_pdg_filtering(binary, base / "filter"),
             lambda: test_radial_outward_reaches_observer(binary, base / "outward"),
+            lambda: test_gamma_gamma_step_stride_reduces_steps_used(binary, base / "gamma_stride"),
+            lambda: test_gamma_gamma_no_silent_alpha_table_clamp(binary, base / "gamma_outside_table"),
+            lambda: test_gamma_gamma_max_steps_guard(binary, base / "gamma_max_steps"),
+            test_breit_wheeler_cross_section_threshold_and_peak,
+            test_blackbody_number_density_normalization,
+            test_gamma_gamma_log_table_matches_direct_integral,
+            test_gamma_gamma_interpolation_varies_inside_same_cell,
             lambda: test_radial_inward_captured(binary, base / "inward"),
             lambda: test_ambiguous_generic_momentum_rejected(binary, base / "ambiguous"),
             lambda: test_named_zamo_tetrad_direction_fields_accepted(binary, base / "named_zamo"),

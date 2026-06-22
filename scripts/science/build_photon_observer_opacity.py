@@ -26,6 +26,15 @@ OPACITY_FIELDS = [
     "opacity_status",
     "n_medium_segments_used",
     "path_subset_status",
+    "tau_gamma_gamma",
+    "survival_gamma_gamma",
+    "gamma_gamma_opacity_status",
+    "gamma_gamma_steps_used",
+    "gamma_gamma_path_length_rg",
+    "gamma_gamma_temperature_mev_mean",
+    "gamma_gamma_temperature_mev_max",
+    "gamma_gamma_max_alpha_per_rg",
+    "gamma_gamma_mean_alpha_per_rg",
 ]
 
 SUMMARY_FIELDS = [
@@ -41,6 +50,8 @@ SUMMARY_FIELDS = [
     "mean_survival_probability",
     "total_observed_energy_gev",
     "total_attenuated_observed_energy_gev",
+    "mean_tau_gamma_gamma",
+    "max_tau_gamma_gamma",
 ]
 
 
@@ -55,11 +66,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--medium-compressed-jsonl", type=Path)
     parser.add_argument("--medium-compressed-summary-csv", type=Path)
     parser.add_argument("--medium-compressed-provenance", type=Path)
-    parser.add_argument("--photon-opacity-mode", required=True, choices=["disabled", "vacuum", "constant_alpha_path", "density_gray_toy"])
+    parser.add_argument("--photon-opacity-mode", required=True, choices=["disabled", "vacuum", "constant_alpha_path", "density_gray_toy", "gamma_gamma_local_blackbody"])
     parser.add_argument("--photon-constant-alpha-per-rg", required=True, type=float)
     parser.add_argument("--photon-density-gray-kappa-per-rg-per-gcm3", default=0.0, type=float)
     parser.add_argument("--photon-density-gray-energy-exponent", default=0.0, type=float)
     parser.add_argument("--photon-density-gray-reference-energy-gev", default=1.0, type=float)
+    parser.add_argument("--photon-gamma-gamma-target-field-model", default="local_blackbody_isotropic")
+    parser.add_argument("--photon-gamma-gamma-dilution-factor", default=1.0, type=float)
+    parser.add_argument("--photon-gamma-gamma-energy-grid-min-gev", default=1.0e-6, type=float)
+    parser.add_argument("--photon-gamma-gamma-energy-grid-max-gev", default=1.0e6, type=float)
+    parser.add_argument("--photon-gamma-gamma-temperature-grid-min-mev", default=1.0e-3, type=float)
+    parser.add_argument("--photon-gamma-gamma-temperature-grid-max-mev", default=10.0, type=float)
+    parser.add_argument("--photon-gamma-gamma-n-energy-bins", default=64, type=int)
+    parser.add_argument("--photon-gamma-gamma-n-temperature-bins", default=64, type=int)
+    parser.add_argument("--photon-gamma-gamma-n-epsilon-quad", default=64, type=int)
+    parser.add_argument("--photon-gamma-gamma-n-mu-quad", default=32, type=int)
+    parser.add_argument("--photon-gamma-gamma-max-table-cells", default=4096, type=int)
+    parser.add_argument("--photon-gamma-gamma-max-steps-per-photon", default=200000, type=int)
+    parser.add_argument("--photon-gamma-gamma-step-stride", default=1, type=int)
+    parser.add_argument("--photon-gamma-gamma-alpha-floor-cm-inv", default=1.0e-300, type=float)
+    parser.add_argument("--photon-gamma-gamma-table-direct-integral-tolerance", default=0.2, type=float)
+    parser.add_argument("--photon-gamma-gamma-fail-on-invalid", default="true", choices=["true", "false"])
+    parser.add_argument("--photon-gamma-gamma-requires-medium", default="true", choices=["true", "false"])
     parser.add_argument("--photon-opacity-truncated-path-policy", default="fail", choices=["fail", "exclude", "diagnostic_only"])
     parser.add_argument("--photon-opacity-fail-on-invalid", required=True, choices=["true", "false"])
     parser.add_argument("--photon-opacity-output-mode", required=True, choices=["separate_file"])
@@ -175,6 +203,8 @@ def opacity_model_for_mode(mode: str, medium_backend: str = "unknown_medium") ->
         if safe_backend in {"none", "unknown", "unknown_medium"}:
             return "density_gray_toy_unknown_medium"
         return f"density_gray_toy_{safe_backend}"
+    if mode == "gamma_gamma_local_blackbody":
+        return "gamma_gamma_local_blackbody_analytic_torus_zamo_diagnostic"
     return "none"
 
 
@@ -250,6 +280,44 @@ def git_hash() -> str | None:
     return completed.stdout.strip() or None
 
 
+def validate_gamma_gamma_config(args: argparse.Namespace) -> None:
+    if args.photon_gamma_gamma_target_field_model != "local_blackbody_isotropic":
+        raise ValueError("gamma_gamma_local_blackbody only supports photon_gamma_gamma_target_field_model=local_blackbody_isotropic")
+    if not math.isfinite(args.photon_gamma_gamma_dilution_factor) or args.photon_gamma_gamma_dilution_factor < 0.0:
+        raise ValueError("photon_gamma_gamma_dilution_factor must be finite and >= 0")
+    if not (
+        math.isfinite(args.photon_gamma_gamma_energy_grid_min_gev)
+        and math.isfinite(args.photon_gamma_gamma_energy_grid_max_gev)
+        and args.photon_gamma_gamma_energy_grid_min_gev > 0.0
+        and args.photon_gamma_gamma_energy_grid_max_gev > args.photon_gamma_gamma_energy_grid_min_gev
+    ):
+        raise ValueError("photon gamma-gamma energy grid bounds must be finite with 0 < min < max")
+    if not (
+        math.isfinite(args.photon_gamma_gamma_temperature_grid_min_mev)
+        and math.isfinite(args.photon_gamma_gamma_temperature_grid_max_mev)
+        and args.photon_gamma_gamma_temperature_grid_min_mev > 0.0
+        and args.photon_gamma_gamma_temperature_grid_max_mev > args.photon_gamma_gamma_temperature_grid_min_mev
+    ):
+        raise ValueError("photon gamma-gamma temperature grid bounds must be finite with 0 < min < max")
+    table_cells = args.photon_gamma_gamma_n_energy_bins * args.photon_gamma_gamma_n_temperature_bins
+    if args.photon_gamma_gamma_n_energy_bins <= 1 or args.photon_gamma_gamma_n_temperature_bins <= 1:
+        raise ValueError("photon gamma-gamma table requires more than one energy and temperature bin")
+    if args.photon_gamma_gamma_max_table_cells <= 0 or table_cells > args.photon_gamma_gamma_max_table_cells:
+        raise ValueError("photon gamma-gamma table exceeds photon_gamma_gamma_max_table_cells")
+    if args.photon_gamma_gamma_n_epsilon_quad <= 0:
+        raise ValueError("photon_gamma_gamma_n_epsilon_quad must be > 0")
+    if args.photon_gamma_gamma_n_mu_quad <= 0:
+        raise ValueError("photon_gamma_gamma_n_mu_quad must be > 0")
+    if args.photon_gamma_gamma_step_stride < 1:
+        raise ValueError("photon_gamma_gamma_step_stride must be >= 1")
+    if args.photon_gamma_gamma_max_steps_per_photon <= 0:
+        raise ValueError("photon_gamma_gamma_max_steps_per_photon must be > 0")
+    if not math.isfinite(args.photon_gamma_gamma_alpha_floor_cm_inv) or args.photon_gamma_gamma_alpha_floor_cm_inv <= 0.0:
+        raise ValueError("photon_gamma_gamma_alpha_floor_cm_inv must be finite and > 0")
+    if not math.isfinite(args.photon_gamma_gamma_table_direct_integral_tolerance) or args.photon_gamma_gamma_table_direct_integral_tolerance <= 0.0:
+        raise ValueError("photon_gamma_gamma_table_direct_integral_tolerance must be finite and > 0")
+
+
 def opacity_row(
     row: dict[str, str],
     *,
@@ -261,6 +329,7 @@ def opacity_row(
     status: str,
     n_medium_segments_used: int | str = "",
     path_subset_status: str = "",
+    gamma_gamma_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     survival = math.exp(-tau)
     attenuated = observed * survival
@@ -281,6 +350,8 @@ def opacity_row(
             "path_subset_status": path_subset_status,
         }
     )
+    if gamma_gamma_fields:
+        out.update(gamma_gamma_fields)
     return out
 
 
@@ -300,6 +371,15 @@ def invalid_row(row: dict[str, str], *, mode: str, model: str, status: str) -> d
             "opacity_status": status,
             "n_medium_segments_used": "",
             "path_subset_status": "",
+            "tau_gamma_gamma": "",
+            "survival_gamma_gamma": "",
+            "gamma_gamma_opacity_status": "",
+            "gamma_gamma_steps_used": "",
+            "gamma_gamma_path_length_rg": "",
+            "gamma_gamma_temperature_mev_mean": "",
+            "gamma_gamma_temperature_mev_max": "",
+            "gamma_gamma_max_alpha_per_rg": "",
+            "gamma_gamma_mean_alpha_per_rg": "",
         }
     )
     return out
@@ -326,6 +406,8 @@ def build_opacity_rows(
         if mode == "vacuum"
         else "constant_alpha_path"
         if mode == "constant_alpha_path"
+        else "gamma_gamma_on_the_fly_geodesic_steps"
+        if mode == "gamma_gamma_local_blackbody"
         else "density_gray_toy_compressed_segments"
     )
     used_paths: set[str] = set()
@@ -346,6 +428,25 @@ def build_opacity_rows(
                 tau = alpha_const_per_rg * path_length
                 n_segments = ""
                 subset_status = ""
+            elif mode == "gamma_gamma_local_blackbody":
+                status = str(row.get("gamma_gamma_opacity_status", ""))
+                if status != "valid_diagnostic_gamma_gamma":
+                    output_rows.append(invalid_row(row, mode=mode, model=model, status=status or "invalid_missing_gamma_gamma_opacity"))
+                    invalid += 1
+                    continue
+                tau_value = as_float(row.get("tau_gamma_gamma"))
+                survival_value = as_float(row.get("survival_gamma_gamma"))
+                if tau_value is None or tau_value < 0.0:
+                    output_rows.append(invalid_row(row, mode=mode, model=model, status="invalid_tau_gamma_gamma"))
+                    invalid += 1
+                    continue
+                if survival_value is None or not (0.0 <= survival_value <= 1.0):
+                    output_rows.append(invalid_row(row, mode=mode, model=model, status="invalid_survival_gamma_gamma"))
+                    invalid += 1
+                    continue
+                tau = tau_value
+                n_segments = ""
+                subset_status = "diagnostic_only"
             else:
                 path_id = str(row.get("photon_path_id", "")).strip()
                 item = (density_tau_by_path or {}).get(path_id)
@@ -368,6 +469,17 @@ def build_opacity_rows(
                 status=f"valid_{mode}",
                 n_medium_segments_used=n_segments,
                 path_subset_status=subset_status,
+                gamma_gamma_fields={
+                    "tau_gamma_gamma": row.get("tau_gamma_gamma", ""),
+                    "survival_gamma_gamma": row.get("survival_gamma_gamma", ""),
+                    "gamma_gamma_opacity_status": row.get("gamma_gamma_opacity_status", ""),
+                    "gamma_gamma_steps_used": row.get("gamma_gamma_steps_used", ""),
+                    "gamma_gamma_path_length_rg": row.get("gamma_gamma_path_length_rg", ""),
+                    "gamma_gamma_temperature_mev_mean": row.get("gamma_gamma_temperature_mev_mean", ""),
+                    "gamma_gamma_temperature_mev_max": row.get("gamma_gamma_temperature_mev_max", ""),
+                    "gamma_gamma_max_alpha_per_rg": row.get("gamma_gamma_max_alpha_per_rg", ""),
+                    "gamma_gamma_mean_alpha_per_rg": row.get("gamma_gamma_mean_alpha_per_rg", ""),
+                } if mode == "gamma_gamma_local_blackbody" else None,
             )
             survival = float(out["photon_survival_probability"])
             attenuated = float(out["attenuated_observed_energy_gev"])
@@ -394,6 +506,8 @@ def build_opacity_rows(
         "mean_survival_probability": sum(survivals) / len(survivals) if survivals else "",
         "total_observed_energy_gev": total_observed,
         "total_attenuated_observed_energy_gev": total_attenuated,
+        "mean_tau_gamma_gamma": sum(taus) / len(taus) if taus and mode == "gamma_gamma_local_blackbody" else "",
+        "max_tau_gamma_gamma": max(taus) if taus and mode == "gamma_gamma_local_blackbody" else "",
     }
     return output_rows, summary
 
@@ -439,9 +553,11 @@ def write_provenance(
     absorption_applied = (
         (args.photon_opacity_mode == "constant_alpha_path" and float(args.photon_constant_alpha_per_rg) > 0.0)
         or (args.photon_opacity_mode == "density_gray_toy" and float(args.photon_density_gray_kappa_per_rg_per_gcm3) > 0.0)
+        or (args.photon_opacity_mode == "gamma_gamma_local_blackbody" and float(summary.get("max_tau_gamma_gamma") or 0.0) > 0.0)
     )
     model = model or opacity_model_for_mode(args.photon_opacity_mode, medium_backend)
     toy_mode = args.photon_opacity_mode == "density_gray_toy"
+    gamma_gamma_mode = args.photon_opacity_mode == "gamma_gamma_local_blackbody"
     provenance = {
         "phase": "photon_observer_camera_opacity",
         "input": str(args.redshift_csv),
@@ -453,23 +569,51 @@ def write_provenance(
         "density_gray_kappa_per_rg_per_gcm3": float(args.photon_density_gray_kappa_per_rg_per_gcm3),
         "density_gray_energy_exponent": float(args.photon_density_gray_energy_exponent),
         "density_gray_reference_energy_gev": float(args.photon_density_gray_reference_energy_gev),
-        "tau_integration_method": "density_gray_toy_compressed_segments" if toy_mode else "constant_alpha_path" if args.photon_opacity_mode == "constant_alpha_path" else "vacuum_identity" if args.photon_opacity_mode == "vacuum" else "none",
+        "photon_gamma_gamma_target_field_model": args.photon_gamma_gamma_target_field_model,
+        "photon_gamma_gamma_dilution_factor": float(args.photon_gamma_gamma_dilution_factor),
+        "photon_gamma_gamma_energy_grid_min_gev": float(args.photon_gamma_gamma_energy_grid_min_gev),
+        "photon_gamma_gamma_energy_grid_max_gev": float(args.photon_gamma_gamma_energy_grid_max_gev),
+        "photon_gamma_gamma_temperature_grid_min_mev": float(args.photon_gamma_gamma_temperature_grid_min_mev),
+        "photon_gamma_gamma_temperature_grid_max_mev": float(args.photon_gamma_gamma_temperature_grid_max_mev),
+        "photon_gamma_gamma_n_energy_bins": int(args.photon_gamma_gamma_n_energy_bins),
+        "photon_gamma_gamma_n_temperature_bins": int(args.photon_gamma_gamma_n_temperature_bins),
+        "photon_gamma_gamma_n_epsilon_quad": int(args.photon_gamma_gamma_n_epsilon_quad),
+        "photon_gamma_gamma_n_mu_quad": int(args.photon_gamma_gamma_n_mu_quad),
+        "photon_gamma_gamma_max_table_cells": int(args.photon_gamma_gamma_max_table_cells),
+        "photon_gamma_gamma_max_steps_per_photon": int(args.photon_gamma_gamma_max_steps_per_photon),
+        "photon_gamma_gamma_step_stride": int(args.photon_gamma_gamma_step_stride),
+        "photon_gamma_gamma_alpha_floor_cm_inv": float(args.photon_gamma_gamma_alpha_floor_cm_inv),
+        "photon_gamma_gamma_table_direct_integral_tolerance": float(args.photon_gamma_gamma_table_direct_integral_tolerance),
+        "photon_gamma_gamma_fail_on_invalid": as_bool(args.photon_gamma_gamma_fail_on_invalid),
+        "photon_gamma_gamma_requires_medium": as_bool(args.photon_gamma_gamma_requires_medium),
+        "alpha_table_extrapolation_policy": "fail_or_status" if gamma_gamma_mode else "none",
+        "no_silent_clamp": gamma_gamma_mode,
+        "gamma_gamma_stride_is_subsampling": gamma_gamma_mode and int(args.photon_gamma_gamma_step_stride) > 1,
+        "quantitative_tau_requires_stride_1": gamma_gamma_mode,
+        "tau_integration_method": "gamma_gamma_on_the_fly_geodesic_steps" if gamma_gamma_mode else "density_gray_toy_compressed_segments" if toy_mode else "constant_alpha_path" if args.photon_opacity_mode == "constant_alpha_path" else "vacuum_identity" if args.photon_opacity_mode == "vacuum" else "none",
         "path_summary_csv": str(args.path_summary_csv) if args.path_summary_csv else None,
         "medium_compressed_jsonl": str(args.medium_compressed_jsonl) if args.medium_compressed_jsonl else None,
         "medium_compressed_summary_csv": str(args.medium_compressed_summary_csv) if args.medium_compressed_summary_csv else None,
         "medium_compressed_provenance": str(args.medium_compressed_provenance) if args.medium_compressed_provenance else None,
         "path_sampling_used": False,
         "path_sampling_audit_available": bool(args.path_summary_csv and args.path_summary_csv.exists()),
-        "medium_lookup_used": toy_mode,
-        "medium_backend": medium_backend if toy_mode else "none",
+        "medium_lookup_used": toy_mode or gamma_gamma_mode,
+        "medium_backend": "analytic_torus" if gamma_gamma_mode else medium_backend if toy_mode else "none",
         "medium_backend_warnings": medium_backend_warnings or [],
-        "medium_input_path_mode": "compressed_complete_paths" if toy_mode else "none",
+        "medium_input_path_mode": "on_the_fly_geodesic_steps" if gamma_gamma_mode else "compressed_complete_paths" if toy_mode else "none",
         "truncated_path_policy": args.photon_opacity_truncated_path_policy,
         "n_paths_excluded_truncated": summary.get("n_paths_excluded_truncated", 0),
         "opacity_is_toy_model": toy_mode,
-        "not_pair_production": True,
+        "opacity_is_diagnostic_model": gamma_gamma_mode,
+        "not_full_radiative_transfer": gamma_gamma_mode,
+        "target_field_is_local_thermal_approximation": gamma_gamma_mode,
+        "target_field_is_isotropic": gamma_gamma_mode,
+        "pair_production_model": "Breit_Wheeler" if gamma_gamma_mode else "none",
+        "fluid_frame": "zamo" if gamma_gamma_mode else "none",
+        "physics_risk": gamma_gamma_mode,
+        "not_pair_production": not gamma_gamma_mode,
         "not_compton": True,
-        "not_physical_radiative_transfer": toy_mode,
+        "not_physical_radiative_transfer": toy_mode or gamma_gamma_mode,
         "photon_opacity_output_mode": args.photon_opacity_output_mode,
         "photon_opacity_fail_on_invalid": as_bool(args.photon_opacity_fail_on_invalid),
         "photon_absorption_applied": absorption_applied,
@@ -487,6 +631,7 @@ def write_provenance(
             "no Compton scattering",
             f"density_gray_toy uses {medium_backend} medium lookup" if toy_mode else "no medium lookup",
             "density_gray_toy is not physical radiative transfer" if toy_mode else "no rho/T/Ye/u_fluid",
+            "gamma_gamma_local_blackbody is diagnostic local thermal pair-production opacity" if gamma_gamma_mode else "no gamma-gamma pair-production opacity",
             "no full radiative transfer",
             "no detector response",
         ],
@@ -515,6 +660,8 @@ def main() -> int:
             raise ValueError("photon_density_gray_energy_exponent must be finite")
         if not math.isfinite(float(args.photon_density_gray_reference_energy_gev)) or float(args.photon_density_gray_reference_energy_gev) <= 0.0:
             raise ValueError("photon_density_gray_reference_energy_gev must be finite and > 0")
+        if args.photon_opacity_mode == "gamma_gamma_local_blackbody":
+            validate_gamma_gamma_config(args)
         if args.photon_opacity_mode == "disabled":
             write_provenance(
                 args,
@@ -541,6 +688,11 @@ def main() -> int:
             raise ValueError("photon opacity mode requires observed_energy_gev")
         if args.photon_opacity_mode == "constant_alpha_path" and "total_path_length_rg" not in fields:
             raise ValueError("constant_alpha_path requires total_path_length_rg from photon geodesic integration")
+        if args.photon_opacity_mode == "gamma_gamma_local_blackbody":
+            required_gamma_fields = {"tau_gamma_gamma", "survival_gamma_gamma", "gamma_gamma_opacity_status"}
+            missing_gamma_fields = required_gamma_fields - set(fields)
+            if missing_gamma_fields:
+                raise ValueError(f"gamma_gamma_local_blackbody requires on-the-fly fields from photon escape classifier: {sorted(missing_gamma_fields)}")
         density_tau: dict[str, dict[str, float]] | None = None
         n_excluded = 0
         if args.photon_opacity_mode == "density_gray_toy":

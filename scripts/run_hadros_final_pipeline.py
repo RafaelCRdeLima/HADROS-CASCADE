@@ -113,6 +113,23 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_density_gray_kappa_per_rg_per_gcm3",
         "photon_density_gray_energy_exponent",
         "photon_density_gray_reference_energy_gev",
+        "photon_gamma_gamma_target_field_model",
+        "photon_gamma_gamma_dilution_factor",
+        "photon_gamma_gamma_energy_grid_min_gev",
+        "photon_gamma_gamma_energy_grid_max_gev",
+        "photon_gamma_gamma_temperature_grid_min_mev",
+        "photon_gamma_gamma_temperature_grid_max_mev",
+        "photon_gamma_gamma_n_energy_bins",
+        "photon_gamma_gamma_n_temperature_bins",
+        "photon_gamma_gamma_n_epsilon_quad",
+        "photon_gamma_gamma_n_mu_quad",
+        "photon_gamma_gamma_max_table_cells",
+        "photon_gamma_gamma_max_steps_per_photon",
+        "photon_gamma_gamma_step_stride",
+        "photon_gamma_gamma_alpha_floor_cm_inv",
+        "photon_gamma_gamma_table_direct_integral_tolerance",
+        "photon_gamma_gamma_fail_on_invalid",
+        "photon_gamma_gamma_requires_medium",
         "photon_opacity_truncated_path_policy",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
@@ -136,6 +153,14 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_medium_torus_temperature_mev",
         "photon_medium_torus_Ye",
         "photon_medium_torus_fluid_frame",
+        "uribe_radial_density_path",
+        "uribe_radial_temperature_path",
+        "uribe_radial_ye_path",
+        "uribe_radial_coordinate",
+        "uribe_radial_interpolation_mode",
+        "uribe_radial_out_of_bounds_policy",
+        "uribe_radial_grid_anomaly_policy",
+        "uribe_fluid_frame_fallback",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -180,8 +205,8 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
     as_bool(values["photon_path_sampling_require_validation"])
     as_bool(values["enable_photon_path_compression"])
     as_bool(values["photon_path_compression_require_complete_paths"])
-    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum", "constant_alpha_path", "density_gray_toy"}:
-        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled', 'vacuum', 'constant_alpha_path', or 'density_gray_toy'")
+    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum", "constant_alpha_path", "density_gray_toy", "gamma_gamma_local_blackbody"}:
+        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled', 'vacuum', 'constant_alpha_path', 'density_gray_toy', or 'gamma_gamma_local_blackbody'")
     if not math.isfinite(float(values["photon_constant_alpha_per_rg"])) or float(values["photon_constant_alpha_per_rg"]) < 0.0:
         raise ValueError("photon_constant_alpha_per_rg must be finite and non-negative")
     if not math.isfinite(float(values["photon_density_gray_kappa_per_rg_per_gcm3"])) or float(values["photon_density_gray_kappa_per_rg_per_gcm3"]) < 0.0:
@@ -190,6 +215,33 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("photon_density_gray_energy_exponent must be finite")
     if not math.isfinite(float(values["photon_density_gray_reference_energy_gev"])) or float(values["photon_density_gray_reference_energy_gev"]) <= 0.0:
         raise ValueError("photon_density_gray_reference_energy_gev must be finite and > 0")
+    if str(values["photon_gamma_gamma_target_field_model"]) != "local_blackbody_isotropic":
+        raise ValueError("gamma_gamma_local_blackbody only supports photon_gamma_gamma_target_field_model='local_blackbody_isotropic'")
+    if not math.isfinite(float(values["photon_gamma_gamma_dilution_factor"])) or float(values["photon_gamma_gamma_dilution_factor"]) < 0.0:
+        raise ValueError("photon_gamma_gamma_dilution_factor must be finite and >= 0")
+    if not math.isfinite(float(values["photon_gamma_gamma_energy_grid_min_gev"])) or not math.isfinite(float(values["photon_gamma_gamma_energy_grid_max_gev"])) or float(values["photon_gamma_gamma_energy_grid_min_gev"]) <= 0.0 or float(values["photon_gamma_gamma_energy_grid_max_gev"]) <= float(values["photon_gamma_gamma_energy_grid_min_gev"]):
+        raise ValueError("photon gamma-gamma energy grid requires 0 < min < max")
+    if not math.isfinite(float(values["photon_gamma_gamma_temperature_grid_min_mev"])) or not math.isfinite(float(values["photon_gamma_gamma_temperature_grid_max_mev"])) or float(values["photon_gamma_gamma_temperature_grid_min_mev"]) <= 0.0 or float(values["photon_gamma_gamma_temperature_grid_max_mev"]) <= float(values["photon_gamma_gamma_temperature_grid_min_mev"]):
+        raise ValueError("photon gamma-gamma temperature grid requires 0 < min < max")
+    table_cells = int(values["photon_gamma_gamma_n_energy_bins"]) * int(values["photon_gamma_gamma_n_temperature_bins"])
+    if int(values["photon_gamma_gamma_n_energy_bins"]) <= 1 or int(values["photon_gamma_gamma_n_temperature_bins"]) <= 1:
+        raise ValueError("photon gamma-gamma table requires more than one energy and temperature bin")
+    if int(values["photon_gamma_gamma_max_table_cells"]) <= 0 or table_cells > int(values["photon_gamma_gamma_max_table_cells"]):
+        raise ValueError("photon gamma-gamma table exceeds photon_gamma_gamma_max_table_cells")
+    if int(values["photon_gamma_gamma_n_epsilon_quad"]) <= 0:
+        raise ValueError("photon_gamma_gamma_n_epsilon_quad must be > 0")
+    if int(values["photon_gamma_gamma_n_mu_quad"]) <= 0:
+        raise ValueError("photon_gamma_gamma_n_mu_quad must be > 0")
+    if int(values["photon_gamma_gamma_step_stride"]) < 1:
+        raise ValueError("photon_gamma_gamma_step_stride must be >= 1")
+    if int(values["photon_gamma_gamma_max_steps_per_photon"]) <= 0:
+        raise ValueError("photon_gamma_gamma_max_steps_per_photon must be > 0")
+    if not math.isfinite(float(values["photon_gamma_gamma_alpha_floor_cm_inv"])) or float(values["photon_gamma_gamma_alpha_floor_cm_inv"]) <= 0.0:
+        raise ValueError("photon_gamma_gamma_alpha_floor_cm_inv must be finite and > 0")
+    if not math.isfinite(float(values["photon_gamma_gamma_table_direct_integral_tolerance"])) or float(values["photon_gamma_gamma_table_direct_integral_tolerance"]) <= 0.0:
+        raise ValueError("photon_gamma_gamma_table_direct_integral_tolerance must be finite and > 0")
+    as_bool(values["photon_gamma_gamma_fail_on_invalid"])
+    as_bool(values["photon_gamma_gamma_requires_medium"])
     if str(values["photon_opacity_truncated_path_policy"]) not in {"fail", "exclude", "diagnostic_only"}:
         raise ValueError("Unsupported photon_opacity_truncated_path_policy; expected 'fail', 'exclude', or 'diagnostic_only'")
     if str(values["photon_opacity_output_mode"]) != "separate_file":
@@ -210,6 +262,11 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("density_gray_toy requires photon_medium_input_path_mode='compressed_complete_paths'")
             if str(values["photon_medium_truncated_path_policy"]) != str(values["photon_opacity_truncated_path_policy"]):
                 raise ValueError("density_gray_toy requires medium and opacity truncated path policies to match")
+        if str(values["photon_opacity_mode"]) == "gamma_gamma_local_blackbody":
+            if str(values["photon_medium_model"]) != "analytic_torus":
+                raise ValueError("gamma_gamma_local_blackbody diagnostic mode requires photon_medium_model='analytic_torus'")
+            if str(values["photon_medium_torus_fluid_frame"]) != "zamo":
+                raise ValueError("gamma_gamma_local_blackbody diagnostic mode requires photon_medium_torus_fluid_frame='zamo'")
     if as_bool(values["enable_photon_observer_science_products"]):
         if str(values["photon_observer_mode"]) != "observer_camera_projection":
             raise ValueError("enable_photon_observer_science_products requires photon_observer_mode='observer_camera_projection'")
@@ -279,14 +336,24 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("enable_photon_path_compression requires enable_photon_path_sampling=true")
         if str(values["photon_path_compression_mode"]) != "fixed_stride_segments":
             raise ValueError("enable_photon_path_compression requires photon_path_compression_mode='fixed_stride_segments'")
-    if str(values["photon_medium_model"]) not in {"none", "analytic_torus"}:
-        raise ValueError("Unsupported photon_medium_model; expected 'none' or 'analytic_torus'")
+    if str(values["photon_medium_model"]) not in {"none", "analytic_torus", "uribe_radial_scalar"}:
+        raise ValueError("Unsupported photon_medium_model; expected 'none', 'analytic_torus', or 'uribe_radial_scalar'")
     if str(values["photon_medium_input_path_mode"]) not in {"raw_samples", "compressed_complete_paths"}:
         raise ValueError("Unsupported photon_medium_input_path_mode; expected 'raw_samples' or 'compressed_complete_paths'")
     if str(values["photon_medium_truncated_path_policy"]) not in {"fail", "exclude", "diagnostic_only"}:
         raise ValueError("Unsupported photon_medium_truncated_path_policy; expected 'fail', 'exclude', or 'diagnostic_only'")
     if str(values["photon_medium_torus_fluid_frame"]) != "zamo":
         raise ValueError("photon_medium_torus_fluid_frame must be zamo")
+    if str(values["uribe_radial_coordinate"]) != "uribe_xr_squared_rg":
+        raise ValueError("uribe_radial_coordinate must be uribe_xr_squared_rg")
+    if str(values["uribe_radial_interpolation_mode"]) not in {"linear", "nearest"}:
+        raise ValueError("Unsupported uribe_radial_interpolation_mode; expected 'linear' or 'nearest'")
+    if str(values["uribe_radial_out_of_bounds_policy"]) not in {"fail", "vacuum", "nearest"}:
+        raise ValueError("Unsupported uribe_radial_out_of_bounds_policy; expected 'fail', 'vacuum', or 'nearest'")
+    if str(values["uribe_radial_grid_anomaly_policy"]) not in {"fail", "drop_bad_first_point"}:
+        raise ValueError("Unsupported uribe_radial_grid_anomaly_policy; expected 'fail' or 'drop_bad_first_point'")
+    if str(values["uribe_fluid_frame_fallback"]) not in {"fail", "zamo"}:
+        raise ValueError("Unsupported uribe_fluid_frame_fallback; expected 'fail' or 'zamo'")
     medium_numeric_bounds = {
         "photon_medium_torus_rho0_g_cm3": (0.0, None),
         "photon_medium_torus_r0_rg": (0.0, None),
@@ -305,11 +372,11 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{key} must be <= {upper}")
         if key in {"photon_medium_torus_r0_rg", "photon_medium_torus_sigma_r_rg", "photon_medium_torus_H_over_r"} and value <= 0.0:
             raise ValueError(f"{key} must be > 0")
-    if str(values["photon_medium_model"]) == "analytic_torus":
+    if str(values["photon_medium_model"]) in {"analytic_torus", "uribe_radial_scalar"}:
         if not as_bool(values["enable_photon_observer_camera"]):
-            raise ValueError("photon_medium_model='analytic_torus' requires enable_photon_observer_camera=true")
+            raise ValueError("photon medium lookup requires enable_photon_observer_camera=true")
         if not as_bool(values["enable_photon_path_sampling"]):
-            raise ValueError("photon_medium_model='analytic_torus' requires enable_photon_path_sampling=true")
+            raise ValueError("photon medium lookup requires enable_photon_path_sampling=true")
         if str(values["photon_medium_input_path_mode"]) == "compressed_complete_paths":
             if not as_bool(values["enable_photon_path_compression"]):
                 raise ValueError("photon_medium_input_path_mode='compressed_complete_paths' requires enable_photon_path_compression=true")
@@ -475,6 +542,23 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_density_gray_kappa_per_rg_per_gcm3": float(photon["photon_density_gray_kappa_per_rg_per_gcm3"]),
         "photon_density_gray_energy_exponent": float(photon["photon_density_gray_energy_exponent"]),
         "photon_density_gray_reference_energy_gev": float(photon["photon_density_gray_reference_energy_gev"]),
+        "photon_gamma_gamma_target_field_model": photon["photon_gamma_gamma_target_field_model"],
+        "photon_gamma_gamma_dilution_factor": float(photon["photon_gamma_gamma_dilution_factor"]),
+        "photon_gamma_gamma_energy_grid_min_gev": float(photon["photon_gamma_gamma_energy_grid_min_gev"]),
+        "photon_gamma_gamma_energy_grid_max_gev": float(photon["photon_gamma_gamma_energy_grid_max_gev"]),
+        "photon_gamma_gamma_temperature_grid_min_mev": float(photon["photon_gamma_gamma_temperature_grid_min_mev"]),
+        "photon_gamma_gamma_temperature_grid_max_mev": float(photon["photon_gamma_gamma_temperature_grid_max_mev"]),
+        "photon_gamma_gamma_n_energy_bins": int(photon["photon_gamma_gamma_n_energy_bins"]),
+        "photon_gamma_gamma_n_temperature_bins": int(photon["photon_gamma_gamma_n_temperature_bins"]),
+        "photon_gamma_gamma_n_epsilon_quad": int(photon["photon_gamma_gamma_n_epsilon_quad"]),
+        "photon_gamma_gamma_n_mu_quad": int(photon["photon_gamma_gamma_n_mu_quad"]),
+        "photon_gamma_gamma_max_table_cells": int(photon["photon_gamma_gamma_max_table_cells"]),
+        "photon_gamma_gamma_max_steps_per_photon": int(photon["photon_gamma_gamma_max_steps_per_photon"]),
+        "photon_gamma_gamma_step_stride": int(photon["photon_gamma_gamma_step_stride"]),
+        "photon_gamma_gamma_alpha_floor_cm_inv": float(photon["photon_gamma_gamma_alpha_floor_cm_inv"]),
+        "photon_gamma_gamma_table_direct_integral_tolerance": float(photon["photon_gamma_gamma_table_direct_integral_tolerance"]),
+        "photon_gamma_gamma_fail_on_invalid": as_bool(photon["photon_gamma_gamma_fail_on_invalid"]),
+        "photon_gamma_gamma_requires_medium": as_bool(photon["photon_gamma_gamma_requires_medium"]),
         "photon_opacity_truncated_path_policy": photon["photon_opacity_truncated_path_policy"],
         "photon_opacity_fail_on_invalid": as_bool(photon["photon_opacity_fail_on_invalid"]),
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
@@ -498,6 +582,14 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_medium_torus_temperature_mev": float(photon["photon_medium_torus_temperature_mev"]),
         "photon_medium_torus_Ye": float(photon["photon_medium_torus_Ye"]),
         "photon_medium_torus_fluid_frame": photon["photon_medium_torus_fluid_frame"],
+        "uribe_radial_density_path": photon["uribe_radial_density_path"],
+        "uribe_radial_temperature_path": photon["uribe_radial_temperature_path"],
+        "uribe_radial_ye_path": photon["uribe_radial_ye_path"],
+        "uribe_radial_coordinate": photon["uribe_radial_coordinate"],
+        "uribe_radial_interpolation_mode": photon["uribe_radial_interpolation_mode"],
+        "uribe_radial_out_of_bounds_policy": photon["uribe_radial_out_of_bounds_policy"],
+        "uribe_radial_grid_anomaly_policy": photon["uribe_radial_grid_anomaly_policy"],
+        "uribe_fluid_frame_fallback": photon["uribe_fluid_frame_fallback"],
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -566,13 +658,28 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             and str(photon["photon_redshift_mode"]) == "validated_zamo"
             and as_bool(photon["enable_photon_validation_gate"])
             and as_bool(photon["enable_photon_opacity"])
-            and str(photon["photon_opacity_mode"]) in {"vacuum", "constant_alpha_path", "density_gray_toy"}
+            and str(photon["photon_opacity_mode"]) in {"vacuum", "constant_alpha_path", "density_gray_toy", "gamma_gamma_local_blackbody"}
         ),
         "photon_opacity_mode": photon["photon_opacity_mode"],
         "photon_constant_alpha_per_rg": float(photon["photon_constant_alpha_per_rg"]),
         "photon_density_gray_kappa_per_rg_per_gcm3": float(photon["photon_density_gray_kappa_per_rg_per_gcm3"]),
         "photon_density_gray_energy_exponent": float(photon["photon_density_gray_energy_exponent"]),
         "photon_density_gray_reference_energy_gev": float(photon["photon_density_gray_reference_energy_gev"]),
+        "photon_gamma_gamma_target_field_model": photon["photon_gamma_gamma_target_field_model"],
+        "photon_gamma_gamma_dilution_factor": float(photon["photon_gamma_gamma_dilution_factor"]),
+        "photon_gamma_gamma_energy_grid_min_gev": float(photon["photon_gamma_gamma_energy_grid_min_gev"]),
+        "photon_gamma_gamma_energy_grid_max_gev": float(photon["photon_gamma_gamma_energy_grid_max_gev"]),
+        "photon_gamma_gamma_temperature_grid_min_mev": float(photon["photon_gamma_gamma_temperature_grid_min_mev"]),
+        "photon_gamma_gamma_temperature_grid_max_mev": float(photon["photon_gamma_gamma_temperature_grid_max_mev"]),
+        "photon_gamma_gamma_n_energy_bins": int(photon["photon_gamma_gamma_n_energy_bins"]),
+        "photon_gamma_gamma_n_temperature_bins": int(photon["photon_gamma_gamma_n_temperature_bins"]),
+        "photon_gamma_gamma_n_epsilon_quad": int(photon["photon_gamma_gamma_n_epsilon_quad"]),
+        "photon_gamma_gamma_n_mu_quad": int(photon["photon_gamma_gamma_n_mu_quad"]),
+        "photon_gamma_gamma_max_table_cells": int(photon["photon_gamma_gamma_max_table_cells"]),
+        "photon_gamma_gamma_max_steps_per_photon": int(photon["photon_gamma_gamma_max_steps_per_photon"]),
+        "photon_gamma_gamma_step_stride": int(photon["photon_gamma_gamma_step_stride"]),
+        "photon_gamma_gamma_alpha_floor_cm_inv": float(photon["photon_gamma_gamma_alpha_floor_cm_inv"]),
+        "photon_gamma_gamma_table_direct_integral_tolerance": float(photon["photon_gamma_gamma_table_direct_integral_tolerance"]),
         "photon_opacity_truncated_path_policy": photon["photon_opacity_truncated_path_policy"],
         "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
         "photon_path_sampling_enabled_effective": (
@@ -593,12 +700,17 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_medium_lookup_enabled_effective": (
             as_bool(photon["enable_photon_observer_camera"])
             and as_bool(photon["enable_photon_path_sampling"])
-            and str(photon["photon_medium_model"]) == "analytic_torus"
+            and str(photon["photon_medium_model"]) in {"analytic_torus", "uribe_radial_scalar"}
         ),
         "photon_medium_model": photon["photon_medium_model"],
         "photon_medium_input_path_mode": photon["photon_medium_input_path_mode"],
         "photon_medium_truncated_path_policy": photon["photon_medium_truncated_path_policy"],
         "photon_medium_torus_fluid_frame": photon["photon_medium_torus_fluid_frame"],
+        "uribe_radial_coordinate": photon["uribe_radial_coordinate"],
+        "uribe_radial_interpolation_mode": photon["uribe_radial_interpolation_mode"],
+        "uribe_radial_out_of_bounds_policy": photon["uribe_radial_out_of_bounds_policy"],
+        "uribe_radial_grid_anomaly_policy": photon["uribe_radial_grid_anomaly_policy"],
+        "uribe_fluid_frame_fallback": photon["uribe_fluid_frame_fallback"],
         "photon_medium_lookup_applies_opacity": False,
         "photon_absorption_applied": False,
         "photon_observer_camera_detector_model_applied": False,
@@ -885,6 +997,8 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     "build/compute_kerr_photon_escape_classifier",
                     "--spin",
                     str(config.get("spin", 0.8)),
+                    "--black-hole-mass-msun",
+                    str(config["black_hole_mass_msun"]),
                     "--observer-radius-rg",
                     str(config.get("camera_r_obs_rg", 80.0)),
                     "--max-radius-rg",
@@ -917,6 +1031,48 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     str(photon["photon_path_sampling_output_format"]),
                     "--photon-path-sampling-require-validation",
                     "true" if as_bool(photon["photon_path_sampling_require_validation"]) else "false",
+                    "--photon-opacity-mode",
+                    str(photon["photon_opacity_mode"]),
+                    "--photon-gamma-gamma-target-field-model",
+                    str(photon["photon_gamma_gamma_target_field_model"]),
+                    "--photon-gamma-gamma-dilution-factor",
+                    str(photon["photon_gamma_gamma_dilution_factor"]),
+                    "--photon-gamma-gamma-energy-grid-min-gev",
+                    str(photon["photon_gamma_gamma_energy_grid_min_gev"]),
+                    "--photon-gamma-gamma-energy-grid-max-gev",
+                    str(photon["photon_gamma_gamma_energy_grid_max_gev"]),
+                    "--photon-gamma-gamma-temperature-grid-min-mev",
+                    str(photon["photon_gamma_gamma_temperature_grid_min_mev"]),
+                    "--photon-gamma-gamma-temperature-grid-max-mev",
+                    str(photon["photon_gamma_gamma_temperature_grid_max_mev"]),
+                    "--photon-gamma-gamma-n-energy-bins",
+                    str(int(photon["photon_gamma_gamma_n_energy_bins"])),
+                    "--photon-gamma-gamma-n-temperature-bins",
+                    str(int(photon["photon_gamma_gamma_n_temperature_bins"])),
+                    "--photon-gamma-gamma-n-epsilon-quad",
+                    str(int(photon["photon_gamma_gamma_n_epsilon_quad"])),
+                    "--photon-gamma-gamma-n-mu-quad",
+                    str(int(photon["photon_gamma_gamma_n_mu_quad"])),
+                    "--photon-gamma-gamma-max-table-cells",
+                    str(int(photon["photon_gamma_gamma_max_table_cells"])),
+                    "--photon-gamma-gamma-max-steps-per-photon",
+                    str(int(photon["photon_gamma_gamma_max_steps_per_photon"])),
+                    "--photon-gamma-gamma-step-stride",
+                    str(int(photon["photon_gamma_gamma_step_stride"])),
+                    "--photon-gamma-gamma-alpha-floor-cm-inv",
+                    str(photon["photon_gamma_gamma_alpha_floor_cm_inv"]),
+                    "--photon-gamma-gamma-table-direct-integral-tolerance",
+                    str(photon["photon_gamma_gamma_table_direct_integral_tolerance"]),
+                    "--photon-gamma-gamma-fail-on-invalid",
+                    "true" if as_bool(photon["photon_gamma_gamma_fail_on_invalid"]) else "false",
+                    "--photon-gamma-gamma-requires-medium",
+                    "true" if as_bool(photon["photon_gamma_gamma_requires_medium"]) else "false",
+                    "--photon-medium-model",
+                    str(photon["photon_medium_model"]),
+                    "--photon-medium-torus-temperature-mev",
+                    str(photon["photon_medium_torus_temperature_mev"]),
+                    "--photon-medium-torus-fluid-frame",
+                    str(photon["photon_medium_torus_fluid_frame"]),
                 ],
                 photon_escape_expected,
                 allow_empty_outputs=(cascade / "photon_escape_classifier.jsonl",),
@@ -958,7 +1114,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     allow_empty_outputs=(cascade / "photon_observer_compressed_path_segments.jsonl",),
                 )
             )
-        if str(photon["photon_medium_model"]) == "analytic_torus":
+        if str(photon["photon_medium_model"]) in {"analytic_torus", "uribe_radial_scalar"}:
             medium_input_mode = str(photon["photon_medium_input_path_mode"])
             medium_output_jsonl = cascade / (
                 "photon_observer_medium_compressed_segments.jsonl"
@@ -1027,11 +1183,27 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     str(photon["photon_medium_torus_Ye"]),
                     "--photon-medium-torus-fluid-frame",
                     str(photon["photon_medium_torus_fluid_frame"]),
+                    "--uribe-radial-density-path",
+                    str(photon["uribe_radial_density_path"]),
+                    "--uribe-radial-temperature-path",
+                    str(photon["uribe_radial_temperature_path"]),
+                    "--uribe-radial-ye-path",
+                    str(photon["uribe_radial_ye_path"]),
+                    "--uribe-radial-coordinate",
+                    str(photon["uribe_radial_coordinate"]),
+                    "--uribe-radial-interpolation-mode",
+                    str(photon["uribe_radial_interpolation_mode"]),
+                    "--uribe-radial-out-of-bounds-policy",
+                    str(photon["uribe_radial_out_of_bounds_policy"]),
+                    "--uribe-radial-grid-anomaly-policy",
+                    str(photon["uribe_radial_grid_anomaly_policy"]),
+                    "--uribe-fluid-frame-fallback",
+                    str(photon["uribe_fluid_frame_fallback"]),
                 ]
             )
             steps.append(
                 FinalStep(
-                    "photon_medium_lookup_analytic_torus",
+                    f"photon_medium_lookup_{photon['photon_medium_model']}",
                     medium_command,
                     [
                         medium_output_jsonl,
@@ -1198,7 +1370,7 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                             ],
                         )
                     )
-                attenuated_opacity_modes = {"vacuum", "constant_alpha_path", "density_gray_toy"}
+                attenuated_opacity_modes = {"vacuum", "constant_alpha_path", "density_gray_toy", "gamma_gamma_local_blackbody"}
                 opacity_mode = str(photon["photon_opacity_mode"])
                 if as_bool(photon["enable_photon_opacity"]) and opacity_mode in attenuated_opacity_modes:
                     opacity_command = [
@@ -1226,6 +1398,40 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                         str(photon["photon_density_gray_energy_exponent"]),
                         "--photon-density-gray-reference-energy-gev",
                         str(photon["photon_density_gray_reference_energy_gev"]),
+                        "--photon-gamma-gamma-target-field-model",
+                        str(photon["photon_gamma_gamma_target_field_model"]),
+                        "--photon-gamma-gamma-dilution-factor",
+                        str(photon["photon_gamma_gamma_dilution_factor"]),
+                        "--photon-gamma-gamma-energy-grid-min-gev",
+                        str(photon["photon_gamma_gamma_energy_grid_min_gev"]),
+                        "--photon-gamma-gamma-energy-grid-max-gev",
+                        str(photon["photon_gamma_gamma_energy_grid_max_gev"]),
+                        "--photon-gamma-gamma-temperature-grid-min-mev",
+                        str(photon["photon_gamma_gamma_temperature_grid_min_mev"]),
+                        "--photon-gamma-gamma-temperature-grid-max-mev",
+                        str(photon["photon_gamma_gamma_temperature_grid_max_mev"]),
+                        "--photon-gamma-gamma-n-energy-bins",
+                        str(int(photon["photon_gamma_gamma_n_energy_bins"])),
+                        "--photon-gamma-gamma-n-temperature-bins",
+                        str(int(photon["photon_gamma_gamma_n_temperature_bins"])),
+                        "--photon-gamma-gamma-n-epsilon-quad",
+                        str(int(photon["photon_gamma_gamma_n_epsilon_quad"])),
+                        "--photon-gamma-gamma-n-mu-quad",
+                        str(int(photon["photon_gamma_gamma_n_mu_quad"])),
+                        "--photon-gamma-gamma-max-table-cells",
+                        str(int(photon["photon_gamma_gamma_max_table_cells"])),
+                        "--photon-gamma-gamma-max-steps-per-photon",
+                        str(int(photon["photon_gamma_gamma_max_steps_per_photon"])),
+                        "--photon-gamma-gamma-step-stride",
+                        str(int(photon["photon_gamma_gamma_step_stride"])),
+                        "--photon-gamma-gamma-alpha-floor-cm-inv",
+                        str(photon["photon_gamma_gamma_alpha_floor_cm_inv"]),
+                        "--photon-gamma-gamma-table-direct-integral-tolerance",
+                        str(photon["photon_gamma_gamma_table_direct_integral_tolerance"]),
+                        "--photon-gamma-gamma-fail-on-invalid",
+                        "true" if as_bool(photon["photon_gamma_gamma_fail_on_invalid"]) else "false",
+                        "--photon-gamma-gamma-requires-medium",
+                        "true" if as_bool(photon["photon_gamma_gamma_requires_medium"]) else "false",
                         "--photon-opacity-truncated-path-policy",
                         str(photon["photon_opacity_truncated_path_policy"]),
                         "--photon-opacity-fail-on-invalid",

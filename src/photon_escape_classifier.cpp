@@ -18,6 +18,12 @@ namespace {
 
 constexpr double PI = 3.141592653589793238462643383279502884;
 constexpr double REL_EPS = 1.0e-300;
+constexpr double SIGMA_T_CM2 = 6.6524587321e-25;
+constexpr double ELECTRON_MASS_GEV = 0.00051099895;
+constexpr double ERG_PER_GEV = 0.001602176634;
+constexpr double PLANCK_ERG_S = 6.62607015e-27;
+constexpr double SPEED_OF_LIGHT_CM_S = 2.99792458e10;
+constexpr double SOLAR_MASS_GRAVITATIONAL_RADIUS_CM = 1.4766250385e5;
 
 struct PhotonRecord {
     long long photon_path_id = 0;
@@ -82,6 +88,15 @@ struct PhotonResult {
     double crossing_r_error_rg = std::numeric_limits<double>::quiet_NaN();
     double crossing_null_norm_abs_error = std::numeric_limits<double>::quiet_NaN();
     std::string failure_reason;
+    double tau_gamma_gamma = std::numeric_limits<double>::quiet_NaN();
+    double survival_gamma_gamma = std::numeric_limits<double>::quiet_NaN();
+    std::string gamma_gamma_opacity_status = "disabled";
+    int gamma_gamma_steps_used = 0;
+    double gamma_gamma_path_length_rg = 0.0;
+    double gamma_gamma_temperature_mev_mean = std::numeric_limits<double>::quiet_NaN();
+    double gamma_gamma_temperature_mev_max = std::numeric_limits<double>::quiet_NaN();
+    double gamma_gamma_max_alpha_per_rg = std::numeric_limits<double>::quiet_NaN();
+    double gamma_gamma_mean_alpha_per_rg = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct PathSample {
@@ -156,6 +171,11 @@ struct PathPerPhotonSummary {
     double relative_Lz_error = std::numeric_limits<double>::quiet_NaN();
     double max_final_p_mu_error = std::numeric_limits<double>::quiet_NaN();
 };
+
+bool gamma_gamma_enabled(const PhotonEscapeConfig& config)
+{
+    return config.photon_opacity_mode == "gamma_gamma_local_blackbody";
+}
 
 bool starts_with(const std::string& value, const std::string& prefix)
 {
@@ -461,6 +481,277 @@ double spatial_path_length_rg(const KerrMetric& metric, const GeodesicState& pre
     return std::sqrt(std::max(0.0, dl2));
 }
 
+double breit_wheeler_sigma_cm2(double s_dimensionless)
+{
+    if (!std::isfinite(s_dimensionless) || s_dimensionless < 1.0) {
+        return 0.0;
+    }
+    const double beta2 = std::max(0.0, 1.0 - 1.0 / s_dimensionless);
+    const double beta = std::sqrt(beta2);
+    if (!(beta > 0.0) || beta >= 1.0) {
+        return 0.0;
+    }
+    const double beta4 = beta2 * beta2;
+    const double log_term = std::log((1.0 + beta) / (1.0 - beta));
+    const double bracket = (3.0 - beta4) * log_term - 2.0 * beta * (2.0 - beta2);
+    const double sigma = (3.0 / 16.0) * SIGMA_T_CM2 * (1.0 - beta2) * bracket;
+    return std::isfinite(sigma) && sigma > 0.0 ? sigma : 0.0;
+}
+
+double blackbody_number_density_per_gev_cm3(double epsilon_gev, double temperature_mev)
+{
+    if (!(epsilon_gev > 0.0) || !(temperature_mev > 0.0)) {
+        return 0.0;
+    }
+    const double kT_gev = temperature_mev * 1.0e-3;
+    const double x = epsilon_gev / kT_gev;
+    if (x > 700.0) {
+        return 0.0;
+    }
+    const double denom = std::expm1(x);
+    if (!(denom > 0.0) || !std::isfinite(denom)) {
+        return 0.0;
+    }
+    const double hc = PLANCK_ERG_S * SPEED_OF_LIGHT_CM_S;
+    const double coeff = 8.0 * PI * std::pow(ERG_PER_GEV, 3.0) / (hc * hc * hc);
+    const double n = coeff * epsilon_gev * epsilon_gev / denom;
+    return std::isfinite(n) && n > 0.0 ? n : 0.0;
+}
+
+double gamma_gamma_alpha_cm_inv_direct(
+    double energy_gev,
+    double temperature_mev,
+    int n_epsilon_quad,
+    int n_mu_quad,
+    double dilution_factor
+)
+{
+    if (!(energy_gev > 0.0) || !(temperature_mev > 0.0) || dilution_factor <= 0.0) {
+        return 0.0;
+    }
+    const double kT_gev = temperature_mev * 1.0e-3;
+    const double eps_min = std::max(1.0e-30, kT_gev * 1.0e-6);
+    const double eps_max = std::max(eps_min * 1.000001, kT_gev * 100.0);
+    const double log_min = std::log(eps_min);
+    const double dlog = (std::log(eps_max) - log_min) / static_cast<double>(n_epsilon_quad);
+    const double dmu = 2.0 / static_cast<double>(n_mu_quad);
+    double alpha = 0.0;
+    for (int ieps = 0; ieps < n_epsilon_quad; ++ieps) {
+        const double epsilon = std::exp(log_min + (static_cast<double>(ieps) + 0.5) * dlog);
+        const double deps = epsilon * dlog;
+        const double n_epsilon = blackbody_number_density_per_gev_cm3(epsilon, temperature_mev);
+        if (n_epsilon <= 0.0) {
+            continue;
+        }
+        double angular = 0.0;
+        for (int imu = 0; imu < n_mu_quad; ++imu) {
+            const double mu = -1.0 + (static_cast<double>(imu) + 0.5) * dmu;
+            const double one_minus_mu = 1.0 - mu;
+            const double s = energy_gev * epsilon * one_minus_mu / (2.0 * ELECTRON_MASS_GEV * ELECTRON_MASS_GEV);
+            angular += 0.5 * one_minus_mu * breit_wheeler_sigma_cm2(s) * dmu;
+        }
+        alpha += n_epsilon * angular * deps;
+    }
+    alpha *= dilution_factor;
+    return std::isfinite(alpha) && alpha > 0.0 ? alpha : 0.0;
+}
+
+struct GammaGammaAlphaTable {
+    bool enabled = false;
+    int n_energy = 0;
+    int n_temperature = 0;
+    double log_energy_min = 0.0;
+    double log_energy_max = 0.0;
+    double log_temperature_min = 0.0;
+    double log_temperature_max = 0.0;
+    double dlog_energy = 0.0;
+    double dlog_temperature = 0.0;
+    double rg_cm = SOLAR_MASS_GRAVITATIONAL_RADIUS_CM;
+    double alpha_floor_cm_inv = 1.0e-300;
+    std::vector<double> alpha_cm_inv;
+
+    int index(int i_energy, int i_temperature) const
+    {
+        return i_temperature * n_energy + i_energy;
+    }
+
+    bool in_range(double energy_gev, double temperature_mev) const
+    {
+        if (!(energy_gev > 0.0) || !(temperature_mev > 0.0)) {
+            return false;
+        }
+        const double le = std::log(energy_gev);
+        const double lt = std::log(temperature_mev);
+        return le >= log_energy_min
+            && le <= log_energy_max
+            && lt >= log_temperature_min
+            && lt <= log_temperature_max;
+    }
+
+    double alpha_per_rg(double energy_gev, double temperature_mev) const
+    {
+        if (!enabled || !(energy_gev > 0.0) || !(temperature_mev > 0.0) || alpha_cm_inv.empty()) {
+            return 0.0;
+        }
+        if (!in_range(energy_gev, temperature_mev)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        const double le = std::log(energy_gev);
+        const double lt = std::log(temperature_mev);
+        const double xe = n_energy > 1 ? (le - log_energy_min) / dlog_energy : 0.0;
+        const double xt = n_temperature > 1 ? (lt - log_temperature_min) / dlog_temperature : 0.0;
+        const int i0 = std::clamp(static_cast<int>(std::floor(xe)), 0, std::max(0, n_energy - 2));
+        const int j0 = std::clamp(static_cast<int>(std::floor(xt)), 0, std::max(0, n_temperature - 2));
+        const int i1 = std::min(i0 + 1, n_energy - 1);
+        const int j1 = std::min(j0 + 1, n_temperature - 1);
+        const double fe = n_energy > 1 ? std::clamp(xe - static_cast<double>(i0), 0.0, 1.0) : 0.0;
+        const double ft = n_temperature > 1 ? std::clamp(xt - static_cast<double>(j0), 0.0, 1.0) : 0.0;
+        const double floor = std::max(alpha_floor_cm_inv, std::numeric_limits<double>::min());
+        const double a00 = std::log(std::max(0.0, alpha_cm_inv[index(i0, j0)]) + floor);
+        const double a10 = std::log(std::max(0.0, alpha_cm_inv[index(i1, j0)]) + floor);
+        const double a01 = std::log(std::max(0.0, alpha_cm_inv[index(i0, j1)]) + floor);
+        const double a11 = std::log(std::max(0.0, alpha_cm_inv[index(i1, j1)]) + floor);
+        const double a0 = a00 * (1.0 - fe) + a10 * fe;
+        const double a1 = a01 * (1.0 - fe) + a11 * fe;
+        const double log_a = a0 * (1.0 - ft) + a1 * ft;
+        const double a_cm = std::max(0.0, std::exp(log_a) - floor);
+        const double a_rg = a_cm * rg_cm;
+        return std::isfinite(a_rg) && a_rg > 0.0 ? a_rg : 0.0;
+    }
+};
+
+GammaGammaAlphaTable build_gamma_gamma_alpha_table(const PhotonEscapeConfig& config)
+{
+    GammaGammaAlphaTable table;
+    if (!gamma_gamma_enabled(config)) {
+        return table;
+    }
+    table.enabled = true;
+    table.n_energy = config.photon_gamma_gamma_n_energy_bins;
+    table.n_temperature = config.photon_gamma_gamma_n_temperature_bins;
+    table.log_energy_min = std::log(config.photon_gamma_gamma_energy_grid_min_gev);
+    table.log_energy_max = std::log(config.photon_gamma_gamma_energy_grid_max_gev);
+    table.log_temperature_min = std::log(config.photon_gamma_gamma_temperature_grid_min_mev);
+    table.log_temperature_max = std::log(config.photon_gamma_gamma_temperature_grid_max_mev);
+    table.dlog_energy = table.n_energy > 1
+        ? (table.log_energy_max - table.log_energy_min) / static_cast<double>(table.n_energy - 1)
+        : 1.0;
+    table.dlog_temperature = table.n_temperature > 1
+        ? (table.log_temperature_max - table.log_temperature_min) / static_cast<double>(table.n_temperature - 1)
+        : 1.0;
+    table.rg_cm = SOLAR_MASS_GRAVITATIONAL_RADIUS_CM * config.black_hole_mass_msun;
+    table.alpha_floor_cm_inv = config.photon_gamma_gamma_alpha_floor_cm_inv;
+    table.alpha_cm_inv.assign(static_cast<std::size_t>(table.n_energy * table.n_temperature), 0.0);
+    for (int jt = 0; jt < table.n_temperature; ++jt) {
+        const double temperature = std::exp(table.log_temperature_min + table.dlog_temperature * static_cast<double>(jt));
+        for (int ie = 0; ie < table.n_energy; ++ie) {
+            const double energy = std::exp(table.log_energy_min + table.dlog_energy * static_cast<double>(ie));
+            table.alpha_cm_inv[table.index(ie, jt)] = gamma_gamma_alpha_cm_inv_direct(
+                energy,
+                temperature,
+                config.photon_gamma_gamma_n_epsilon_quad,
+                config.photon_gamma_gamma_n_mu_quad,
+                config.photon_gamma_gamma_dilution_factor
+            );
+        }
+    }
+    return table;
+}
+
+struct GammaGammaAccumulator {
+    const PhotonEscapeConfig& config;
+    const GammaGammaAlphaTable& table;
+    bool enabled = false;
+    bool invalid = false;
+    std::string invalid_reason;
+    int steps_used = 0;
+    double tau = 0.0;
+    double path_length_rg = 0.0;
+    double temperature_sum = 0.0;
+    double temperature_max = 0.0;
+    double alpha_sum = 0.0;
+    double alpha_max = 0.0;
+
+    GammaGammaAccumulator(const PhotonEscapeConfig& cfg, const GammaGammaAlphaTable& tbl)
+        : config(cfg)
+        , table(tbl)
+        , enabled(gamma_gamma_enabled(cfg))
+    {
+    }
+
+    void accumulate(const KerrMetric& metric, const GeodesicState& state, double dl_rg, int step_index)
+    {
+        if (!enabled || invalid) {
+            return;
+        }
+        if (step_index % config.photon_gamma_gamma_step_stride != 0) {
+            return;
+        }
+        if (steps_used >= config.photon_gamma_gamma_max_steps_per_photon) {
+            invalid = true;
+            invalid_reason = "truncated_diagnostic_steps";
+            return;
+        }
+        if (!std::isfinite(dl_rg) || dl_rg < 0.0) {
+            invalid = true;
+            invalid_reason = "invalid_gamma_gamma_input";
+            return;
+        }
+        const double temperature = config.photon_medium_torus_temperature_mev;
+        if (!std::isfinite(temperature) || temperature < 0.0) {
+            invalid = true;
+            invalid_reason = "invalid_gamma_gamma_input";
+            return;
+        }
+        const double energy = hadros::cascade::zamo_packet_energy(metric, state.r, state.theta, state.pt, state.pphi);
+        if (!std::isfinite(energy) || energy <= 0.0) {
+            invalid = true;
+            invalid_reason = "invalid_gamma_gamma_input";
+            return;
+        }
+        if (!table.in_range(energy, temperature)) {
+            invalid = true;
+            invalid_reason = "outside_alpha_table_range";
+            return;
+        }
+        const double alpha = table.alpha_per_rg(energy, temperature);
+        if (!std::isfinite(alpha) || alpha < 0.0) {
+            invalid = true;
+            invalid_reason = "invalid_gamma_gamma_input";
+            return;
+        }
+        tau += alpha * dl_rg;
+        path_length_rg += dl_rg;
+        temperature_sum += temperature;
+        temperature_max = std::max(temperature_max, temperature);
+        alpha_sum += alpha;
+        alpha_max = std::max(alpha_max, alpha);
+        ++steps_used;
+    }
+
+    void store(PhotonResult& result, bool reached) const
+    {
+        if (!enabled) {
+            return;
+        }
+        result.tau_gamma_gamma = tau;
+        result.survival_gamma_gamma = std::exp(-tau);
+        result.gamma_gamma_steps_used = steps_used;
+        result.gamma_gamma_path_length_rg = path_length_rg;
+        result.gamma_gamma_temperature_mev_mean = steps_used > 0 ? temperature_sum / static_cast<double>(steps_used) : 0.0;
+        result.gamma_gamma_temperature_mev_max = steps_used > 0 ? temperature_max : 0.0;
+        result.gamma_gamma_max_alpha_per_rg = steps_used > 0 ? alpha_max : 0.0;
+        result.gamma_gamma_mean_alpha_per_rg = steps_used > 0 ? alpha_sum / static_cast<double>(steps_used) : 0.0;
+        if (invalid) {
+            result.gamma_gamma_opacity_status = invalid_reason.empty() ? "invalid_gamma_gamma" : invalid_reason;
+        } else if (!reached) {
+            result.gamma_gamma_opacity_status = "incomplete_geodesic";
+        } else {
+            result.gamma_gamma_opacity_status = "valid_diagnostic_gamma_gamma";
+        }
+    }
+};
+
 PathSample make_path_sample(
     const PhotonRecord& record,
     const KerrMetric& metric,
@@ -513,7 +804,8 @@ void add_path_sample(
 
 bool valid_config(const PhotonEscapeConfig& config)
 {
-    return std::isfinite(config.spin)
+    const bool base_valid = std::isfinite(config.spin)
+        && std::isfinite(config.black_hole_mass_msun) && config.black_hole_mass_msun > 0.0
         && std::isfinite(config.observer_radius_rg) && config.observer_radius_rg > 0.0
         && std::isfinite(config.max_radius_rg) && config.max_radius_rg > config.observer_radius_rg
         && std::isfinite(config.geodesic_step_rg) && config.geodesic_step_rg > 0.0
@@ -532,6 +824,41 @@ bool valid_config(const PhotonEscapeConfig& config)
                 && !config.path_samples_summary_csv.empty()
                 && !config.path_samples_per_photon_summary_csv.empty()
                 && !config.path_samples_provenance.empty()));
+    if (!base_valid) {
+        return false;
+    }
+    if (!gamma_gamma_enabled(config)) {
+        return true;
+    }
+    const long long table_cells = static_cast<long long>(config.photon_gamma_gamma_n_energy_bins)
+        * static_cast<long long>(config.photon_gamma_gamma_n_temperature_bins);
+    return config.photon_gamma_gamma_target_field_model == "local_blackbody_isotropic"
+        && config.photon_medium_model == "analytic_torus"
+        && config.photon_medium_torus_fluid_frame == "zamo"
+        && std::isfinite(config.photon_gamma_gamma_dilution_factor)
+        && config.photon_gamma_gamma_dilution_factor >= 0.0
+        && std::isfinite(config.photon_gamma_gamma_energy_grid_min_gev)
+        && std::isfinite(config.photon_gamma_gamma_energy_grid_max_gev)
+        && config.photon_gamma_gamma_energy_grid_min_gev > 0.0
+        && config.photon_gamma_gamma_energy_grid_max_gev > config.photon_gamma_gamma_energy_grid_min_gev
+        && std::isfinite(config.photon_gamma_gamma_temperature_grid_min_mev)
+        && std::isfinite(config.photon_gamma_gamma_temperature_grid_max_mev)
+        && config.photon_gamma_gamma_temperature_grid_min_mev > 0.0
+        && config.photon_gamma_gamma_temperature_grid_max_mev > config.photon_gamma_gamma_temperature_grid_min_mev
+        && config.photon_gamma_gamma_n_energy_bins > 1
+        && config.photon_gamma_gamma_n_temperature_bins > 1
+        && config.photon_gamma_gamma_n_epsilon_quad > 0
+        && config.photon_gamma_gamma_n_mu_quad > 0
+        && config.photon_gamma_gamma_max_table_cells > 0
+        && table_cells <= config.photon_gamma_gamma_max_table_cells
+        && config.photon_gamma_gamma_max_steps_per_photon > 0
+        && config.photon_gamma_gamma_step_stride >= 1
+        && std::isfinite(config.photon_gamma_gamma_alpha_floor_cm_inv)
+        && config.photon_gamma_gamma_alpha_floor_cm_inv > 0.0
+        && std::isfinite(config.photon_gamma_gamma_table_direct_integral_tolerance)
+        && config.photon_gamma_gamma_table_direct_integral_tolerance > 0.0
+        && std::isfinite(config.photon_medium_torus_temperature_mev)
+        && config.photon_medium_torus_temperature_mev >= 0.0;
 }
 
 PhotonResult fail_result(const PhotonRecord& record, const std::string& classification, const std::string& reason)
@@ -572,7 +899,12 @@ bool has_generic_momentum_without_mode(const PhotonRecord& record)
     return record.has_ambiguous_generic_momentum_input;
 }
 
-PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfig& config, PhotonPath* path)
+PhotonResult classify_photon(
+    const PhotonRecord& record,
+    const PhotonEscapeConfig& config,
+    PhotonPath* path,
+    const GammaGammaAlphaTable& gamma_gamma_table
+)
 {
     PhotonResult result;
     result.photon_path_id = record.photon_path_id;
@@ -669,6 +1001,7 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
     result.Lz_initial = state.pphi;
 
     KerrGeodesic geodesic(metric, config.geodesic_step_rg);
+    GammaGammaAccumulator gamma_gamma(config, gamma_gamma_table);
     bool reached = false;
     bool captured = false;
     bool missed = false;
@@ -713,7 +1046,9 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         }
         if (previous_state.r > horizon && state.r <= horizon_crossing_radius) {
             captured = true;
-            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
+            const double dl = spatial_path_length_rg(metric, previous_state, state);
+            result.total_path_length_rg += dl;
+            gamma_gamma.accumulate(metric, state, dl, step);
             if (path != nullptr) {
                 const double dl = spatial_path_length_rg(metric, last_sampled_state, state);
                 add_path_sample(
@@ -750,7 +1085,9 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
             result.crossing_momentum_method = "fractional_rk_crossing_state";
             result.crossing_r_error_rg = std::abs(crossing_state.r - config.observer_radius_rg);
             result.crossing_null_norm_abs_error = std::abs(null_norm_from_pcov(metric, crossing_state));
-            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, crossing_state);
+            const double dl = spatial_path_length_rg(metric, previous_state, crossing_state);
+            result.total_path_length_rg += dl;
+            gamma_gamma.accumulate(metric, crossing_state, dl, step);
             if (std::isfinite(result.crossing_null_norm_abs_error)) {
                 result.null_norm_max_abs_error = std::max(
                     result.null_norm_max_abs_error,
@@ -789,7 +1126,9 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         }
         if (state.r > config.max_radius_rg) {
             missed = true;
-            result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
+            const double dl = spatial_path_length_rg(metric, previous_state, state);
+            result.total_path_length_rg += dl;
+            gamma_gamma.accumulate(metric, state, dl, step);
             if (path != nullptr) {
                 const double dl = spatial_path_length_rg(metric, last_sampled_state, state);
                 add_path_sample(
@@ -811,7 +1150,9 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
             );
             last_sampled_state = state;
         }
-        result.total_path_length_rg += spatial_path_length_rg(metric, previous_state, state);
+        const double dl = spatial_path_length_rg(metric, previous_state, state);
+        result.total_path_length_rg += dl;
+        gamma_gamma.accumulate(metric, state, dl, step);
     }
 
     if (!reached && !captured && !missed && !failed) {
@@ -854,6 +1195,16 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         if (result.failure_reason.empty()) {
             result.failure_reason = "integration_failed";
         }
+    }
+    gamma_gamma.store(result, reached);
+    if (
+        gamma_gamma_enabled(config)
+        && config.photon_gamma_gamma_fail_on_invalid
+        && result.gamma_gamma_opacity_status != "valid_diagnostic_gamma_gamma"
+        && result.gamma_gamma_opacity_status != "incomplete_geodesic"
+    ) {
+        result.classification = "integration_failed_gamma_gamma_opacity";
+        result.failure_reason = result.gamma_gamma_opacity_status;
     }
     return result;
 }
@@ -921,6 +1272,15 @@ void write_result(std::ostream& out, const PhotonResult& result)
     write_json_number(out, "observer_crossing_theta_rad", result.observer_crossing_theta_rad);
     write_json_number(out, "observer_crossing_phi_rad", result.observer_crossing_phi_rad);
     write_json_number(out, "total_path_length_rg", result.total_path_length_rg);
+    write_json_number(out, "tau_gamma_gamma", result.tau_gamma_gamma);
+    write_json_number(out, "survival_gamma_gamma", result.survival_gamma_gamma);
+    write_json_field(out, "gamma_gamma_opacity_status", result.gamma_gamma_opacity_status);
+    out << ",\"gamma_gamma_steps_used\":" << result.gamma_gamma_steps_used;
+    write_json_number(out, "gamma_gamma_path_length_rg", result.gamma_gamma_path_length_rg);
+    write_json_number(out, "gamma_gamma_temperature_mev_mean", result.gamma_gamma_temperature_mev_mean);
+    write_json_number(out, "gamma_gamma_temperature_mev_max", result.gamma_gamma_temperature_mev_max);
+    write_json_number(out, "gamma_gamma_max_alpha_per_rg", result.gamma_gamma_max_alpha_per_rg);
+    write_json_number(out, "gamma_gamma_mean_alpha_per_rg", result.gamma_gamma_mean_alpha_per_rg);
     write_json_field(out, "crossing_momentum_method", result.crossing_momentum_method);
     write_json_number(out, "crossing_r_error_rg", result.crossing_r_error_rg);
     write_json_number(out, "crossing_null_norm_abs_error", result.crossing_null_norm_abs_error);
@@ -1254,6 +1614,8 @@ void write_provenance(const std::string& path, const PhotonEscapeConfig& config,
         << "  \"photon_only\":true,\n"
         << "  \"charged_particle_transport_enabled\":false,\n"
         << "  \"photon_observer_frame\":\"" << config.observer_frame << "\",\n"
+        << "  \"black_hole_mass_msun\":" << config.black_hole_mass_msun << ",\n"
+        << "  \"gamma_gamma_rg_cm\":" << (SOLAR_MASS_GRAVITATIONAL_RADIUS_CM * config.black_hole_mass_msun) << ",\n"
         << "  \"effective_photon_observer_radius_rg\":" << config.observer_radius_rg << ",\n"
         << "  \"photon_null_norm_tolerance\":" << config.photon_null_norm_tolerance << ",\n"
         << "  \"photon_invariant_tolerance\":" << config.photon_invariant_tolerance << ",\n"
@@ -1268,6 +1630,40 @@ void write_provenance(const std::string& path, const PhotonEscapeConfig& config,
         << "  \"photon_path_sample_max_rows_per_photon\":" << config.photon_path_sample_max_rows_per_photon << ",\n"
         << "  \"photon_path_sampling_output_format\":\"" << config.photon_path_sampling_output_format << "\",\n"
         << "  \"photon_path_sampling_require_validation\":" << (config.photon_path_sampling_require_validation ? "true" : "false") << ",\n"
+        << "  \"photon_opacity_mode\":\"" << config.photon_opacity_mode << "\",\n"
+        << "  \"gamma_gamma_local_blackbody_enabled\":" << (gamma_gamma_enabled(config) ? "true" : "false") << ",\n"
+        << "  \"photon_gamma_gamma_target_field_model\":\"" << config.photon_gamma_gamma_target_field_model << "\",\n"
+        << "  \"photon_gamma_gamma_dilution_factor\":" << config.photon_gamma_gamma_dilution_factor << ",\n"
+        << "  \"photon_gamma_gamma_energy_grid_min_gev\":" << config.photon_gamma_gamma_energy_grid_min_gev << ",\n"
+        << "  \"photon_gamma_gamma_energy_grid_max_gev\":" << config.photon_gamma_gamma_energy_grid_max_gev << ",\n"
+        << "  \"photon_gamma_gamma_temperature_grid_min_mev\":" << config.photon_gamma_gamma_temperature_grid_min_mev << ",\n"
+        << "  \"photon_gamma_gamma_temperature_grid_max_mev\":" << config.photon_gamma_gamma_temperature_grid_max_mev << ",\n"
+        << "  \"photon_gamma_gamma_n_energy_bins\":" << config.photon_gamma_gamma_n_energy_bins << ",\n"
+        << "  \"photon_gamma_gamma_n_temperature_bins\":" << config.photon_gamma_gamma_n_temperature_bins << ",\n"
+        << "  \"photon_gamma_gamma_n_epsilon_quad\":" << config.photon_gamma_gamma_n_epsilon_quad << ",\n"
+        << "  \"photon_gamma_gamma_n_mu_quad\":" << config.photon_gamma_gamma_n_mu_quad << ",\n"
+        << "  \"photon_gamma_gamma_max_table_cells\":" << config.photon_gamma_gamma_max_table_cells << ",\n"
+        << "  \"photon_gamma_gamma_table_cells\":" << (config.photon_gamma_gamma_n_energy_bins * config.photon_gamma_gamma_n_temperature_bins) << ",\n"
+        << "  \"photon_gamma_gamma_max_steps_per_photon\":" << config.photon_gamma_gamma_max_steps_per_photon << ",\n"
+        << "  \"photon_gamma_gamma_step_stride\":" << config.photon_gamma_gamma_step_stride << ",\n"
+        << "  \"photon_gamma_gamma_alpha_floor_cm_inv\":" << config.photon_gamma_gamma_alpha_floor_cm_inv << ",\n"
+        << "  \"photon_gamma_gamma_table_direct_integral_tolerance\":" << config.photon_gamma_gamma_table_direct_integral_tolerance << ",\n"
+        << "  \"photon_gamma_gamma_fail_on_invalid\":" << (config.photon_gamma_gamma_fail_on_invalid ? "true" : "false") << ",\n"
+        << "  \"photon_gamma_gamma_requires_medium\":" << (config.photon_gamma_gamma_requires_medium ? "true" : "false") << ",\n"
+        << "  \"alpha_table_extrapolation_policy\":\"fail_or_status\",\n"
+        << "  \"no_silent_clamp\":true,\n"
+        << "  \"gamma_gamma_stride_is_subsampling\":" << (config.photon_gamma_gamma_step_stride > 1 ? "true" : "false") << ",\n"
+        << "  \"quantitative_tau_requires_stride_1\":true,\n"
+        << "  \"opacity_is_diagnostic_model\":" << (gamma_gamma_enabled(config) ? "true" : "false") << ",\n"
+        << "  \"not_full_radiative_transfer\":true,\n"
+        << "  \"target_field_is_local_thermal_approximation\":" << (gamma_gamma_enabled(config) ? "true" : "false") << ",\n"
+        << "  \"target_field_is_isotropic\":" << (gamma_gamma_enabled(config) ? "true" : "false") << ",\n"
+        << "  \"pair_production_model\":\"" << (gamma_gamma_enabled(config) ? "Breit_Wheeler" : "none") << "\",\n"
+        << "  \"fluid_frame\":\"" << (gamma_gamma_enabled(config) ? "zamo" : "none") << "\",\n"
+        << "  \"physics_risk\":" << (gamma_gamma_enabled(config) ? "true" : "false") << ",\n"
+        << "  \"photon_medium_model\":\"" << config.photon_medium_model << "\",\n"
+        << "  \"photon_medium_torus_temperature_mev\":" << config.photon_medium_torus_temperature_mev << ",\n"
+        << "  \"photon_medium_torus_fluid_frame\":\"" << config.photon_medium_torus_fluid_frame << "\",\n"
         << "  \"momentum_input_mode\":\"per_record_required\",\n"
         << "  \"momentum_input_mode_allowed_values\":[\"zamo_tetrad\",\"global_boyer_lindquist\",\"covariant_p_mu\"],\n"
         << "  \"observer_crossing_interpolation\":\"fractional RK crossing state; classification only, not detection\",\n"
@@ -1311,6 +1707,7 @@ PhotonEscapeSummary run_photon_escape_classifier(
         path_output.open(config.path_samples_jsonl);
         ensure_output(path_output, config.path_samples_jsonl);
     }
+    const GammaGammaAlphaTable gamma_gamma_table = build_gamma_gamma_alpha_table(config);
 
     PhotonEscapeSummary summary;
     PathSamplingSummary path_summary;
@@ -1329,7 +1726,12 @@ PhotonEscapeSummary run_photon_escape_classifier(
         ++summary.n_photons;
         record.photon_path_id = static_cast<long long>(summary.n_photons);
         PhotonPath path;
-        PhotonResult result = classify_photon(record, config, config.enable_photon_path_sampling ? &path : nullptr);
+        PhotonResult result = classify_photon(
+            record,
+            config,
+            config.enable_photon_path_sampling ? &path : nullptr,
+            gamma_gamma_table
+        );
         update_summary(summary, result);
         write_result(output, result);
         if (should_write_path_samples(config, result, path)) {

@@ -97,6 +97,59 @@ def write_redshift(path: Path) -> None:
     )
 
 
+def write_gamma_gamma_redshift(path: Path, *, tau_scale: float = 1.0, status: str = "valid_diagnostic_gamma_gamma") -> None:
+    fields = [
+        "event_id",
+        "photon_path_id",
+        "particle_id",
+        "pixel_x",
+        "pixel_y",
+        "inside_fov",
+        "redshift_status",
+        "input_energy_gev",
+        "observed_energy_gev",
+        "redshift_factor",
+        "total_path_length_rg",
+        "tau_gamma_gamma",
+        "survival_gamma_gamma",
+        "gamma_gamma_opacity_status",
+        "gamma_gamma_steps_used",
+        "gamma_gamma_path_length_rg",
+        "gamma_gamma_temperature_mev_mean",
+        "gamma_gamma_temperature_mev_max",
+        "gamma_gamma_max_alpha_per_rg",
+        "gamma_gamma_mean_alpha_per_rg",
+    ]
+    rows = []
+    for photon_path_id, observed, tau in [(101, 8.0, 0.1), (102, 4.0, 0.2), (103, 2.0, 0.0)]:
+        scaled_tau = tau * tau_scale
+        rows.append(
+            {
+                "event_id": 1,
+                "photon_path_id": photon_path_id,
+                "particle_id": photon_path_id - 100,
+                "pixel_x": 0,
+                "pixel_y": 0,
+                "inside_fov": "true",
+                "redshift_status": "valid",
+                "input_energy_gev": observed / 0.8,
+                "observed_energy_gev": observed,
+                "redshift_factor": 0.8,
+                "total_path_length_rg": 10.0,
+                "tau_gamma_gamma": scaled_tau,
+                "survival_gamma_gamma": math.exp(-scaled_tau),
+                "gamma_gamma_opacity_status": status,
+                "gamma_gamma_steps_used": 5,
+                "gamma_gamma_path_length_rg": 10.0,
+                "gamma_gamma_temperature_mev_mean": 1.0,
+                "gamma_gamma_temperature_mev_max": 1.0,
+                "gamma_gamma_max_alpha_per_rg": scaled_tau / 10.0 if scaled_tau > 0 else 0.0,
+                "gamma_gamma_mean_alpha_per_rg": scaled_tau / 10.0 if scaled_tau > 0 else 0.0,
+            }
+        )
+    write_csv(path, fields, rows)
+
+
 def write_validation(tmp: Path) -> tuple[Path, Path]:
     summary = tmp / "photon_observer_camera_validation_summary.csv"
     provenance = tmp / "photon_observer_camera_validation_provenance.json"
@@ -282,7 +335,10 @@ def run_opacity(
     medium_backend: str = "analytic_torus",
 ) -> subprocess.CompletedProcess[str]:
     redshift = tmp / "photon_observer_camera_redshift.csv"
-    write_redshift(redshift)
+    if mode == "gamma_gamma_local_blackbody":
+        write_gamma_gamma_redshift(redshift)
+    else:
+        write_redshift(redshift)
     path_summary = tmp / "photon_observer_geodesic_path_samples_per_photon_summary.csv"
     if write_paths:
         write_path_summary(path_summary)
@@ -309,6 +365,40 @@ def run_opacity(
             str(energy_exponent),
             "--photon-density-gray-reference-energy-gev",
             str(reference_energy),
+            "--photon-gamma-gamma-target-field-model",
+            "local_blackbody_isotropic",
+            "--photon-gamma-gamma-dilution-factor",
+            "1.0",
+            "--photon-gamma-gamma-energy-grid-min-gev",
+            "1e-6",
+            "--photon-gamma-gamma-energy-grid-max-gev",
+            "1e6",
+            "--photon-gamma-gamma-temperature-grid-min-mev",
+            "1e-3",
+            "--photon-gamma-gamma-temperature-grid-max-mev",
+            "10.0",
+            "--photon-gamma-gamma-n-energy-bins",
+            "4",
+            "--photon-gamma-gamma-n-temperature-bins",
+            "4",
+            "--photon-gamma-gamma-n-epsilon-quad",
+            "4",
+            "--photon-gamma-gamma-n-mu-quad",
+            "4",
+            "--photon-gamma-gamma-max-table-cells",
+            "16",
+            "--photon-gamma-gamma-max-steps-per-photon",
+            "100",
+            "--photon-gamma-gamma-step-stride",
+            "1",
+            "--photon-gamma-gamma-alpha-floor-cm-inv",
+            "1e-300",
+            "--photon-gamma-gamma-table-direct-integral-tolerance",
+            "0.2",
+            "--photon-gamma-gamma-fail-on-invalid",
+            "true",
+            "--photon-gamma-gamma-requires-medium",
+            "true",
             "--photon-opacity-truncated-path-policy",
             truncated_policy,
             "--photon-opacity-fail-on-invalid",
@@ -640,6 +730,88 @@ def test_density_gray_toy_requires_complete_paths() -> None:
             raise AssertionError(provenance)
 
 
+def test_gamma_gamma_local_blackbody_uses_on_the_fly_tau() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_gamma_gamma_opacity_") as tmp_name:
+        tmp = Path(tmp_name)
+        completed = run_opacity(tmp, mode="gamma_gamma_local_blackbody")
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        rows = read_csv(tmp / "photon_observer_camera_attenuated.csv")
+        for row in rows:
+            tau = float(row["tau_gamma_gamma"])
+            if row["photon_opacity_status"] != "valid_gamma_gamma_local_blackbody":
+                raise AssertionError(row)
+            if abs(float(row["tau_path"]) - tau) > 1e-14:
+                raise AssertionError(row)
+            expected_survival = math.exp(-tau)
+            if abs(float(row["survival_gamma_gamma"]) - expected_survival) > 1e-14:
+                raise AssertionError(row)
+            if abs(float(row["attenuated_observed_energy_gev"]) - float(row["observed_energy_gev"]) * expected_survival) > 1e-14:
+                raise AssertionError(row)
+            if row["path_subset_status"] != "diagnostic_only":
+                raise AssertionError(row)
+        provenance = json.loads((tmp / "photon_observer_opacity_provenance.json").read_text(encoding="utf-8"))
+        if provenance["opacity_is_diagnostic_model"] is not True:
+            raise AssertionError(provenance)
+        if provenance["not_full_radiative_transfer"] is not True:
+            raise AssertionError(provenance)
+        if provenance["pair_production_model"] != "Breit_Wheeler":
+            raise AssertionError(provenance)
+        if provenance["fluid_frame"] != "zamo" or provenance["physics_risk"] is not True:
+            raise AssertionError(provenance)
+
+
+def test_gamma_gamma_max_table_cells_guard_fails() -> None:
+    with tempfile.TemporaryDirectory(prefix="hadros_gamma_gamma_big_table_") as tmp_name:
+        tmp = Path(tmp_name)
+        redshift = tmp / "photon_observer_camera_redshift.csv"
+        write_gamma_gamma_redshift(redshift)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--redshift-csv",
+                str(redshift),
+                "--output-csv",
+                str(tmp / "photon_observer_camera_attenuated.csv"),
+                "--summary-csv",
+                str(tmp / "photon_observer_opacity_summary.csv"),
+                "--provenance",
+                str(tmp / "photon_observer_opacity_provenance.json"),
+                "--photon-opacity-mode",
+                "gamma_gamma_local_blackbody",
+                "--photon-constant-alpha-per-rg",
+                "0",
+                "--photon-density-gray-kappa-per-rg-per-gcm3",
+                "0",
+                "--photon-density-gray-energy-exponent",
+                "0",
+                "--photon-density-gray-reference-energy-gev",
+                "1",
+                "--photon-gamma-gamma-target-field-model",
+                "local_blackbody_isotropic",
+                "--photon-gamma-gamma-n-energy-bins",
+                "8",
+                "--photon-gamma-gamma-n-temperature-bins",
+                "8",
+                "--photon-gamma-gamma-max-table-cells",
+                "16",
+                "--photon-opacity-truncated-path-policy",
+                "fail",
+                "--photon-opacity-fail-on-invalid",
+                "true",
+                "--photon-opacity-output-mode",
+                "separate_file",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            raise AssertionError("gamma-gamma max_table_cells guard accepted oversized table")
+
+
 def test_science_products_write_separate_attenuated_products() -> None:
     with tempfile.TemporaryDirectory(prefix="hadros_photon_opacity_science_") as tmp_name:
         tmp = Path(tmp_name)
@@ -703,6 +875,23 @@ def test_config_web_and_pipeline_schedule_opacity() -> None:
         "photon_density_gray_kappa_per_rg_per_gcm3",
         "photon_density_gray_energy_exponent",
         "photon_density_gray_reference_energy_gev",
+        "photon_gamma_gamma_target_field_model",
+        "photon_gamma_gamma_dilution_factor",
+        "photon_gamma_gamma_energy_grid_min_gev",
+        "photon_gamma_gamma_energy_grid_max_gev",
+        "photon_gamma_gamma_temperature_grid_min_mev",
+        "photon_gamma_gamma_temperature_grid_max_mev",
+        "photon_gamma_gamma_n_energy_bins",
+        "photon_gamma_gamma_n_temperature_bins",
+        "photon_gamma_gamma_n_epsilon_quad",
+        "photon_gamma_gamma_n_mu_quad",
+        "photon_gamma_gamma_max_table_cells",
+        "photon_gamma_gamma_max_steps_per_photon",
+        "photon_gamma_gamma_step_stride",
+        "photon_gamma_gamma_alpha_floor_cm_inv",
+        "photon_gamma_gamma_table_direct_integral_tolerance",
+        "photon_gamma_gamma_fail_on_invalid",
+        "photon_gamma_gamma_requires_medium",
         "photon_opacity_truncated_path_policy",
         "photon_opacity_fail_on_invalid",
         "photon_opacity_output_mode",
@@ -823,6 +1012,37 @@ def test_config_web_and_pipeline_schedule_opacity() -> None:
             if required not in density_command:
                 raise AssertionError(density_command)
 
+        config.update(
+            {
+                "photon_opacity_mode": "gamma_gamma_local_blackbody",
+                "photon_medium_model": "analytic_torus",
+                "photon_medium_torus_fluid_frame": "zamo",
+                "photon_gamma_gamma_n_energy_bins": 4,
+                "photon_gamma_gamma_n_temperature_bins": 4,
+                "photon_gamma_gamma_max_table_cells": 16,
+            }
+        )
+        config["photon_escape_classifier"].update(
+            {
+                "photon_opacity_mode": "gamma_gamma_local_blackbody",
+                "photon_medium_model": "analytic_torus",
+                "photon_medium_torus_fluid_frame": "zamo",
+                "photon_gamma_gamma_n_energy_bins": 4,
+                "photon_gamma_gamma_n_temperature_bins": 4,
+                "photon_gamma_gamma_max_table_cells": 16,
+            }
+        )
+        steps = final_pipeline.build_steps(config, ROOT / "presets/config_web/final_pipeline_config.json")
+        names = [step.name for step in steps]
+        if "photon_observer_opacity_gamma_gamma_local_blackbody" not in names:
+            raise AssertionError(names)
+        escape_command = " ".join(next(step.command for step in steps if step.name == "photon_escape_classifier"))
+        if "--photon-gamma-gamma-target-field-model local_blackbody_isotropic" not in escape_command:
+            raise AssertionError(escape_command)
+        gamma_command = " ".join(next(step.command for step in steps if step.name == "photon_observer_opacity_gamma_gamma_local_blackbody"))
+        if "--photon-gamma-gamma-n-energy-bins 4" not in gamma_command:
+            raise AssertionError(gamma_command)
+
 
 if __name__ == "__main__":
     test_disabled_does_not_create_attenuated_file()
@@ -838,5 +1058,7 @@ if __name__ == "__main__":
     test_density_gray_toy_energy_exponent_uses_fluid_energy()
     test_density_gray_toy_truncated_fail_policy_fails()
     test_density_gray_toy_requires_complete_paths()
+    test_gamma_gamma_local_blackbody_uses_on_the_fly_tau()
+    test_gamma_gamma_max_table_cells_guard_fails()
     test_science_products_write_separate_attenuated_products()
     test_config_web_and_pipeline_schedule_opacity()
