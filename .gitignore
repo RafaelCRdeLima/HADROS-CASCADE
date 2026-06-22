@@ -104,3 +104,5 @@ g4*.root
 /+/
 /Collapsar/
 /Neutrinos/
+assets/sky/*.jpg
+assets/sky/*.ppm
