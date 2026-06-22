@@ -98,6 +98,10 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "enable_photon_validation_gate",
         "enable_photon_observer_science_products",
         "photon_observer_science_require_validation",
+        "enable_photon_opacity",
+        "photon_opacity_mode",
+        "photon_opacity_fail_on_invalid",
+        "photon_opacity_output_mode",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -132,6 +136,21 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
     as_bool(values["enable_photon_validation_gate"])
     as_bool(values["enable_photon_observer_science_products"])
     as_bool(values["photon_observer_science_require_validation"])
+    as_bool(values["enable_photon_opacity"])
+    as_bool(values["photon_opacity_fail_on_invalid"])
+    if str(values["photon_opacity_mode"]) not in {"disabled", "vacuum"}:
+        raise ValueError("Unsupported photon_opacity_mode; expected 'disabled' or 'vacuum'")
+    if str(values["photon_opacity_output_mode"]) != "separate_file":
+        raise ValueError("photon_opacity_output_mode must be separate_file")
+    if as_bool(values["enable_photon_opacity"]):
+        if str(values["photon_opacity_mode"]) != "vacuum":
+            raise ValueError("enable_photon_opacity currently requires photon_opacity_mode='vacuum'")
+        if str(values["photon_observer_mode"]) != "observer_camera_projection":
+            raise ValueError("enable_photon_opacity requires photon_observer_mode='observer_camera_projection'")
+        if str(values["photon_redshift_mode"]) != "validated_zamo":
+            raise ValueError("enable_photon_opacity requires photon_redshift_mode='validated_zamo'")
+        if not as_bool(values["enable_photon_validation_gate"]):
+            raise ValueError("photon opacity requires enable_photon_validation_gate=true")
     if as_bool(values["enable_photon_observer_science_products"]):
         if str(values["photon_observer_mode"]) != "observer_camera_projection":
             raise ValueError("enable_photon_observer_science_products requires photon_observer_mode='observer_camera_projection'")
@@ -312,6 +331,10 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "enable_photon_validation_gate": as_bool(photon["enable_photon_validation_gate"]),
         "enable_photon_observer_science_products": as_bool(photon["enable_photon_observer_science_products"]),
         "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
+        "enable_photon_opacity": as_bool(photon["enable_photon_opacity"]),
+        "photon_opacity_mode": photon["photon_opacity_mode"],
+        "photon_opacity_fail_on_invalid": as_bool(photon["photon_opacity_fail_on_invalid"]),
+        "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -364,6 +387,17 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             and as_bool(photon["enable_photon_observer_science_products"])
         ),
         "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
+        "photon_opacity_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and photon_mode == "observer_camera_projection"
+            and str(photon["photon_redshift_mode"]) == "validated_zamo"
+            and as_bool(photon["enable_photon_validation_gate"])
+            and as_bool(photon["enable_photon_opacity"])
+            and str(photon["photon_opacity_mode"]) == "vacuum"
+        ),
+        "photon_opacity_mode": photon["photon_opacity_mode"],
+        "photon_opacity_output_mode": photon["photon_opacity_output_mode"],
+        "photon_absorption_applied": False,
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
         "photon_observer_camera_aperture_acceptance_applied": False,
@@ -815,28 +849,67 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                             ],
                         )
                     )
+                if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) == "vacuum":
+                    steps.append(
+                        FinalStep(
+                            "photon_observer_opacity_vacuum",
+                            [
+                                sys.executable,
+                                "scripts/science/build_photon_observer_opacity.py",
+                                "--redshift-csv",
+                                str(cascade / "photon_observer_camera_redshift.csv"),
+                                "--output-csv",
+                                str(cascade / "photon_observer_camera_attenuated.csv"),
+                                "--summary-csv",
+                                str(cascade / "photon_observer_opacity_summary.csv"),
+                                "--provenance",
+                                str(cascade / "photon_observer_opacity_provenance.json"),
+                                "--pipeline-config",
+                                str(science_config),
+                                "--photon-opacity-mode",
+                                str(photon["photon_opacity_mode"]),
+                                "--photon-opacity-fail-on-invalid",
+                                "true" if as_bool(photon["photon_opacity_fail_on_invalid"]) else "false",
+                                "--photon-opacity-output-mode",
+                                str(photon["photon_opacity_output_mode"]),
+                            ],
+                            [
+                                cascade / "photon_observer_camera_attenuated.csv",
+                                cascade / "photon_observer_opacity_summary.csv",
+                                cascade / "photon_observer_opacity_provenance.json",
+                            ],
+                        )
+                    )
                 if as_bool(photon["enable_photon_observer_science_products"]):
+                    science_command = [
+                        sys.executable,
+                        "scripts/science/build_photon_observer_science_products.py",
+                        "--redshift-csv",
+                        str(cascade / "photon_observer_camera_redshift.csv"),
+                        "--validation-summary-csv",
+                        str(cascade / "photon_observer_camera_validation_summary.csv"),
+                        "--validation-provenance",
+                        str(cascade / "photon_observer_camera_validation_provenance.json"),
+                        "--output-dir",
+                        str(cascade / "photon_observer_science_products"),
+                        "--pipeline-config",
+                        str(science_config),
+                        "--camera-nx",
+                        str(config["camera_nx"]),
+                        "--camera-ny",
+                        str(config["camera_ny"]),
+                    ]
+                    if as_bool(photon["enable_photon_opacity"]) and str(photon["photon_opacity_mode"]) == "vacuum":
+                        science_command.extend(
+                            [
+                                "--attenuated-csv",
+                                str(cascade / "photon_observer_camera_attenuated.csv"),
+                            ]
+                        )
                     steps.append(
                         FinalStep(
                             "photon_observer_science_products",
-                            [
-                                sys.executable,
-                                "scripts/science/build_photon_observer_science_products.py",
-                                "--redshift-csv",
-                                str(cascade / "photon_observer_camera_redshift.csv"),
-                                "--validation-summary-csv",
-                                str(cascade / "photon_observer_camera_validation_summary.csv"),
-                                "--validation-provenance",
-                                str(cascade / "photon_observer_camera_validation_provenance.json"),
-                                "--output-dir",
-                                str(cascade / "photon_observer_science_products"),
-                                "--pipeline-config",
-                                str(science_config),
-                                "--camera-nx",
-                                str(config["camera_nx"]),
-                                "--camera-ny",
-                                str(config["camera_ny"]),
-                            ],
+                            science_command,
                             [
                                 cascade / "photon_observer_science_products" / "photon_observer_science_summary.md",
                                 cascade / "photon_observer_science_products" / "photon_observer_science_provenance.json",

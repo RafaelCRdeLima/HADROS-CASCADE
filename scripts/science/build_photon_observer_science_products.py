@@ -17,6 +17,8 @@ MAP_COUNT_FIELDS = ["pixel_x", "pixel_y", "n_photons"]
 MAP_INPUT_FIELDS = ["pixel_x", "pixel_y", "sum_input_energy_gev"]
 MAP_OBSERVED_FIELDS = ["pixel_x", "pixel_y", "sum_observed_energy_gev"]
 MAP_REDSHIFT_FIELDS = ["pixel_x", "pixel_y", "mean_redshift_factor"]
+MAP_ATTENUATED_FIELDS = ["pixel_x", "pixel_y", "sum_attenuated_observed_energy_gev"]
+MAP_SURVIVAL_FIELDS = ["pixel_x", "pixel_y", "mean_photon_survival_probability"]
 HIST_FIELDS = ["bin_index", "bin_min", "bin_max", "count"]
 N_HIST_BINS = 32
 
@@ -24,6 +26,7 @@ N_HIST_BINS = 32
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--redshift-csv", required=True, type=Path)
+    parser.add_argument("--attenuated-csv", type=Path)
     parser.add_argument("--validation-summary-csv", required=True, type=Path)
     parser.add_argument("--validation-provenance", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -125,6 +128,38 @@ def selected_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     return selected
 
 
+def selected_attenuated_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
+    selected: list[dict[str, Any]] = []
+    mode: str | None = None
+    for row in rows:
+        if row.get("redshift_status") != "valid":
+            continue
+        if row.get("photon_opacity_status") not in {"valid_vacuum"}:
+            continue
+        if not as_bool(row.get("inside_fov")):
+            continue
+        pixel_x = as_float(row, "pixel_x")
+        pixel_y = as_float(row, "pixel_y")
+        attenuated = as_float(row, "attenuated_observed_energy_gev")
+        survival = as_float(row, "photon_survival_probability")
+        if None in {pixel_x, pixel_y, attenuated, survival}:
+            continue
+        row_mode = str(row.get("photon_opacity_mode", ""))
+        if mode is None:
+            mode = row_mode
+        elif row_mode != mode:
+            raise ValueError("attenuated CSV mixes photon_opacity_mode values")
+        selected.append(
+            {
+                "pixel_x": int(pixel_x),
+                "pixel_y": int(pixel_y),
+                "attenuated_observed_energy_gev": float(attenuated),
+                "photon_survival_probability": float(survival),
+            }
+        )
+    return selected, mode
+
+
 def infer_shape(rows: list[dict[str, Any]], nx: int | None, ny: int | None) -> tuple[int, int]:
     if nx is not None and nx <= 0:
         raise ValueError("camera_nx must be > 0")
@@ -170,6 +205,42 @@ def pixel_maps(rows: list[dict[str, Any]], nx: int, ny: int) -> dict[str, list[d
         "observed_energy": observed_rows,
         "mean_redshift": redshift_rows,
     }
+
+
+def attenuated_maps(rows: list[dict[str, Any]], nx: int, ny: int) -> dict[str, list[dict[str, Any]]]:
+    accum: dict[tuple[int, int], dict[str, float]] = {}
+    for y in range(ny):
+        for x in range(nx):
+            accum[(x, y)] = {"count": 0.0, "attenuated": 0.0, "survival_sum": 0.0}
+    for row in rows:
+        key = (int(row["pixel_x"]), int(row["pixel_y"]))
+        if key not in accum:
+            continue
+        accum[key]["count"] += 1.0
+        accum[key]["attenuated"] += float(row["attenuated_observed_energy_gev"])
+        accum[key]["survival_sum"] += float(row["photon_survival_probability"])
+
+    energy_rows = []
+    survival_rows = []
+    for y in range(ny):
+        for x in range(nx):
+            item = accum[(x, y)]
+            n = int(item["count"])
+            energy_rows.append(
+                {
+                    "pixel_x": x,
+                    "pixel_y": y,
+                    "sum_attenuated_observed_energy_gev": item["attenuated"],
+                }
+            )
+            survival_rows.append(
+                {
+                    "pixel_x": x,
+                    "pixel_y": y,
+                    "mean_photon_survival_probability": item["survival_sum"] / n if n > 0 else "",
+                }
+            )
+    return {"attenuated_energy": energy_rows, "survival": survival_rows}
 
 
 def histogram(values: list[float], n_bins: int = N_HIST_BINS) -> list[dict[str, Any]]:
@@ -321,12 +392,48 @@ def main() -> int:
             HIST_FIELDS,
             histogram([float(row["redshift_factor"]) for row in rows]),
         )
+        attenuated_summary: dict[str, Any] = {
+            "attenuated_products_available": False,
+            "photon_absorption_applied": False,
+            "photon_opacity_mode": "none",
+        }
+        if args.attenuated_csv is not None and args.attenuated_csv.exists():
+            attenuated_fields, attenuated_input_rows = read_csv(args.attenuated_csv)
+            attenuated_selected, opacity_mode = selected_attenuated_rows(attenuated_input_rows)
+            if opacity_mode != "vacuum":
+                raise ValueError(f"only photon_opacity_mode='vacuum' is supported for attenuated science products, got {opacity_mode!r}")
+            att_maps = attenuated_maps(attenuated_selected, nx, ny)
+            write_csv_rows(
+                args.output_dir / "photon_observer_attenuated_energy_map.csv",
+                MAP_ATTENUATED_FIELDS,
+                att_maps["attenuated_energy"],
+            )
+            write_csv_rows(
+                args.output_dir / "photon_observer_survival_map.csv",
+                MAP_SURVIVAL_FIELDS,
+                att_maps["survival"],
+            )
+            write_csv_rows(
+                args.output_dir / "photon_observer_attenuated_spectrum.csv",
+                HIST_FIELDS,
+                histogram([float(row["attenuated_observed_energy_gev"]) for row in attenuated_selected]),
+            )
+            attenuated_summary = {
+                "attenuated_products_available": True,
+                "photon_absorption_applied": False,
+                "photon_opacity_mode": opacity_mode,
+                "n_attenuated_photons": len(attenuated_selected),
+                "total_attenuated_observed_energy_gev": sum(
+                    float(row["attenuated_observed_energy_gev"]) for row in attenuated_selected
+                ),
+            }
         write_summary_md(args.output_dir / "photon_observer_science_summary.md", summary)
         provenance = {
             "phase": "photon_observer_science_products",
             "product_class": validation["product_class"],
             "input_files": {
                 "redshift_csv": str(args.redshift_csv),
+                "attenuated_csv": str(args.attenuated_csv) if args.attenuated_csv else None,
                 "validation_summary_csv": str(args.validation_summary_csv),
                 "validation_provenance": str(args.validation_provenance),
                 "pipeline_config": str(args.pipeline_config) if args.pipeline_config else None,
@@ -350,6 +457,7 @@ def main() -> int:
             "instrument_response_applied": False,
             "aperture_acceptance_applied": False,
             "photon_absorption_applied": False,
+            "attenuated_products": attenuated_summary,
             "physical_limitations": [
                 "ideal photon observer camera",
                 "no detector response",

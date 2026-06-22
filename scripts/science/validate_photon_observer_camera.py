@@ -43,6 +43,10 @@ REQUIRED_CONFIG_KEYS = [
     "enable_photon_validation_gate",
     "enable_photon_observer_science_products",
     "photon_observer_science_require_validation",
+    "enable_photon_opacity",
+    "photon_opacity_mode",
+    "photon_opacity_fail_on_invalid",
+    "photon_opacity_output_mode",
     "photon_camera_projection_mode",
     "photon_camera_fov_deg",
     "photon_camera_fov_definition",
@@ -58,6 +62,10 @@ LEGACY_RECOVERABLE_CONFIG_KEYS = {
     "enable_photon_validation_gate",
     "enable_photon_observer_science_products",
     "photon_observer_science_require_validation",
+    "enable_photon_opacity",
+    "photon_opacity_mode",
+    "photon_opacity_fail_on_invalid",
+    "photon_opacity_output_mode",
     "photon_observer_crossing_tolerance_rg",
 }
 
