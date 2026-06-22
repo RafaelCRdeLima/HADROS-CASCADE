@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -336,6 +338,10 @@ def schema() -> list[dict[str, Any]]:
                     description="Preserves outside-FOV Phase 3 rows with null pixels for diagnostics.",
                 ),
             ],
+        },
+        {
+            "tab": "Photon Observer Diagnostics",
+            "fields": [],
         },
         {
             "tab": "Torus Model",
@@ -722,6 +728,34 @@ async function launchCameraPreview() {{
   }}
 }}
 
+// ── Photon observer diagnostics ──────────────────────────────
+function photonDiagLog(msg) {{
+  const el = document.getElementById('photon-diagnostics-log');
+  if (el) {{ el.textContent = msg; el.scrollTop = el.scrollHeight; }}
+}}
+
+async function generatePhotonDiagnostics() {{
+  photonDiagLog('Generating photon observer diagnostic plots...\\nDiagnostic only: ideal photon observer camera, no detector response.\\n');
+  try {{
+    const res = await fetch('/api/generate-photon-diagnostics', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(collect()),
+    }});
+    photonDiagLog(await res.text());
+  }} catch (err) {{
+    photonDiagLog('Photon diagnostic generation failed: ' + err);
+  }}
+}}
+
+function openPhotonDiagnosticFolder() {{
+  window.open('/photon-diagnostics/folder', '_blank');
+}}
+
+function openPhotonDiagnosticFile(name) {{
+  window.open('/photon-diagnostics/file/' + encodeURIComponent(name), '_blank');
+}}
+
 // ── Render all tabs ───────────────────────────────────────────
 function render() {{
   const nav = document.getElementById('tab-nav');
@@ -735,6 +769,29 @@ function render() {{
   // Regular tab panels
   let html = state.schema.map(function(tab, i) {{
     const active = i === 0 ? ' active' : '';
+    if (tab.tab === 'Photon Observer Diagnostics') {{
+      return '<div class="tab-panel' + active + '" data-tab="' + i + '">' +
+        '<h2 style="margin:0 0 4px;font-size:1rem;color:#1a2e24">Photon Observer Diagnostics</h2>' +
+        '<p style="color:#556;font-size:0.86rem;line-height:1.55;max-width:820px">' +
+          '<strong>Diagnostic only.</strong> ideal photon observer camera, no detector response. ' +
+          'These buttons use the current official run configuration and require <code>photon_observer_camera_redshift.csv</code>. ' +
+          'They do not run GEANT4, POWHEG/PYTHIA, the full pipeline, dashboards, or paper-ready figures. ' +
+          'They are separate from <code>particle_ray_association_camera</code>.' +
+        '</p>' +
+        '<div class="actions" style="margin-top:12px">' +
+          '<button class="action" onclick="generatePhotonDiagnostics()">Generate photon diagnostic plots</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFolder()">Open photon diagnostic output folder</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_counts_map.png\\')">Open photon_diagnostic_counts_map.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_input_energy_map.png\\')">Open photon_diagnostic_input_energy_map.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_observed_energy_map.png\\')">Open photon_diagnostic_observed_energy_map.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_mean_redshift_map.png\\')">Open photon_diagnostic_mean_redshift_map.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_input_vs_observed_energy.png\\')">Open photon_diagnostic_input_vs_observed_energy.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_redshift_histogram.png\\')">Open photon_diagnostic_redshift_histogram.png</button>' +
+          '<button class="action" onclick="openPhotonDiagnosticFile(\\'photon_diagnostic_morphology_summary.md\\')">Open photon_diagnostic_morphology_summary.md</button>' +
+        '</div>' +
+        '<pre id="photon-diagnostics-log">Photon observer diagnostic output will appear here.</pre>' +
+      '</div>';
+    }}
     return '<div class="tab-panel' + active + '" data-tab="' + i + '"><h2 style="margin:0 0 14px;font-size:1rem;color:#1a2e24">' + tab.tab + '</h2>' +
       tab.fields.map(function(f) {{
         return '<label><span>' + f.label + (f.visibility === 'EXPERT' ? ' <em style="color:#aaa;font-size:0.78rem">(expert)</em>' : '') + '</span>' + inputFor(f, state.values[f.section][f.key]) + '</label>';
@@ -802,6 +859,104 @@ def apply_last_camera_to_values(values: dict[str, dict[str, Any]]) -> dict[str, 
     for section, section_values in payload["mapped"].items():
         values.setdefault(section, {}).update(section_values)
     return payload
+
+
+def photon_diagnostic_paths(values: dict[str, dict[str, Any]]) -> dict[str, Path]:
+    run_dir = Path(final_pipeline_config(values)["output_dir"])
+    cascade = run_dir / "cascade"
+    return {
+        "cascade": cascade,
+        "redshift_csv": cascade / "photon_observer_camera_redshift.csv",
+        "diagnostics": cascade / "photon_observer_diagnostics",
+    }
+
+
+def photon_diagnostic_filenames() -> list[str]:
+    return [
+        "photon_diagnostic_counts_map.png",
+        "photon_diagnostic_input_energy_map.png",
+        "photon_diagnostic_observed_energy_map.png",
+        "photon_diagnostic_mean_redshift_map.png",
+        "photon_diagnostic_valid_photon_density_map.png",
+        "photon_diagnostic_mean_observed_energy_map.png",
+        "photon_diagnostic_input_vs_observed_energy.png",
+        "photon_diagnostic_redshift_histogram.png",
+        "photon_diagnostic_morphology_summary.md",
+        "photon_diagnostic_summary.md",
+    ]
+
+
+def generate_photon_diagnostics(values: dict[str, dict[str, Any]]) -> tuple[int, str]:
+    paths = photon_diagnostic_paths(values)
+    redshift_csv = paths["redshift_csv"]
+    diagnostics = paths["diagnostics"]
+    if not redshift_csv.exists():
+        return (
+            2,
+            "Missing photon_observer_camera_redshift.csv.\n"
+            f"Expected: {redshift_csv}\n"
+            "Run photon_observer_mode=observer_camera_projection with "
+            "photon_redshift_mode=validated_zamo before generating diagnostics.\n",
+        )
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "science" / "build_photon_observer_diagnostic_plots.py"),
+        "--input",
+        str(redshift_csv),
+        "--output-dir",
+        str(diagnostics),
+    ]
+    proc = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    return proc.returncode, "$ " + " ".join(command) + "\n" + proc.stdout + f"\nreturncode={proc.returncode}\n"
+
+
+def render_photon_diagnostic_folder(values: dict[str, dict[str, Any]]) -> str:
+    paths = photon_diagnostic_paths(values)
+    diagnostics = paths["diagnostics"]
+    if not paths["redshift_csv"].exists():
+        return (
+            "<!doctype html><meta charset=\"utf-8\">"
+            "<title>Photon Observer Diagnostics Missing Input</title>"
+            "<body style=\"font-family:system-ui,sans-serif;max-width:900px;margin:32px auto\">"
+            "<h1>Photon Observer Diagnostics</h1>"
+            "<p><strong>Diagnostic only.</strong> ideal photon observer camera, no detector response.</p>"
+            "<p style=\"color:#8a3b00\"><strong>Missing photon_observer_camera_redshift.csv.</strong></p>"
+            f"<p>Expected: <code>{paths['redshift_csv']}</code></p>"
+            "<p>Run photon_observer_mode=observer_camera_projection with "
+            "photon_redshift_mode=validated_zamo before opening diagnostics.</p>"
+            "</body>"
+        )
+    rows = []
+    for name in photon_diagnostic_filenames():
+        path = diagnostics / name
+        status = "present" if path.exists() and path.stat().st_size > 0 else "missing"
+        rows.append(
+            f"<li><a href=\"/photon-diagnostics/file/{name}\">{name}</a> "
+            f"<span style=\"color:#667\">{status}</span></li>"
+        )
+    return (
+        "<!doctype html><meta charset=\"utf-8\">"
+        "<title>Photon Observer Diagnostics</title>"
+        "<body style=\"font-family:system-ui,sans-serif;max-width:900px;margin:32px auto\">"
+        "<h1>Photon Observer Diagnostics</h1>"
+        "<p><strong>Diagnostic only.</strong> ideal photon observer camera, no detector response.</p>"
+        f"<p>Folder: <code>{diagnostics}</code></p>"
+        f"<p>Input CSV: <code>{paths['redshift_csv']}</code></p>"
+        "<ul>" + "\n".join(rows) + "</ul>"
+        "</body>"
+    )
+
+
+def photon_diagnostic_file(values: dict[str, dict[str, Any]], filename: str) -> Path | None:
+    if not photon_diagnostic_paths(values)["redshift_csv"].exists():
+        return None
+    safe_name = Path(filename).name
+    if safe_name not in photon_diagnostic_filenames():
+        return None
+    path = photon_diagnostic_paths(values)["diagnostics"] / safe_name
+    if not path.exists() or not path.is_file():
+        return None
+    return path
 
 
 def launch_camera_preview(
@@ -885,6 +1040,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_bytes(self, code: int, payload: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _send_run_stream(self, command: list[str]) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -926,6 +1088,18 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/dashboard":
             dashboard = Path(final_pipeline_config(values)["output_dir"]) / "dashboard" / "index.html"
             self._send(200, dashboard.read_text(encoding="utf-8") if dashboard.exists() else "Dashboard not generated yet.", "text/html")
+        elif self.path == "/photon-diagnostics/folder":
+            self._send(200, render_photon_diagnostic_folder(values), "text/html")
+        elif self.path.startswith("/photon-diagnostics/file/"):
+            filename = unquote(self.path.removeprefix("/photon-diagnostics/file/"))
+            path = photon_diagnostic_file(values, filename)
+            if path is None:
+                self._send(404, "Photon diagnostic file not found. Generate photon diagnostic plots first.")
+                return
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if path.suffix == ".md":
+                content_type = "text/plain"
+            self._send_bytes(200, path.read_bytes(), content_type)
         else:
             self._send(404, "not found")
 
@@ -952,6 +1126,15 @@ class Handler(BaseHTTPRequestHandler):
             if payload["exists"]:
                 write_values(self.config_path, values)
             self._send_json(200, payload)
+            return
+
+        if self.path == "/api/generate-photon-diagnostics":
+            values = deep_update(defaults(), body)
+            write_values(self.config_path, values)
+            pipeline_config = self.config_path.with_name("final_pipeline_config.json")
+            pipeline_config.write_text(json.dumps(final_pipeline_config(values), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            code, output = generate_photon_diagnostics(values)
+            self._send(200 if code == 0 else 400, output)
             return
 
         values = deep_update(defaults(), body)
