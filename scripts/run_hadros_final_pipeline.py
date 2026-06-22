@@ -96,6 +96,8 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_redshift_energy_tolerance",
         "photon_redshift_fail_on_invalid",
         "enable_photon_validation_gate",
+        "enable_photon_observer_science_products",
+        "photon_observer_science_require_validation",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -128,6 +130,15 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("photon_redshift_energy_tolerance must be > 0")
     as_bool(values["photon_redshift_fail_on_invalid"])
     as_bool(values["enable_photon_validation_gate"])
+    as_bool(values["enable_photon_observer_science_products"])
+    as_bool(values["photon_observer_science_require_validation"])
+    if as_bool(values["enable_photon_observer_science_products"]):
+        if str(values["photon_observer_mode"]) != "observer_camera_projection":
+            raise ValueError("enable_photon_observer_science_products requires photon_observer_mode='observer_camera_projection'")
+        if str(values["photon_redshift_mode"]) != "validated_zamo":
+            raise ValueError("enable_photon_observer_science_products requires photon_redshift_mode='validated_zamo'")
+        if not as_bool(values["enable_photon_validation_gate"]):
+            raise ValueError("photon observer science products require enable_photon_validation_gate=true")
     if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
         raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
     if str(values["photon_camera_projection_mode"]) != "gnomonic_pinhole":
@@ -299,6 +310,8 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_redshift_energy_tolerance": float(photon["photon_redshift_energy_tolerance"]),
         "photon_redshift_fail_on_invalid": as_bool(photon["photon_redshift_fail_on_invalid"]),
         "enable_photon_validation_gate": as_bool(photon["enable_photon_validation_gate"]),
+        "enable_photon_observer_science_products": as_bool(photon["enable_photon_observer_science_products"]),
+        "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -343,6 +356,14 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             and str(photon["photon_redshift_mode"]) == "validated_zamo"
             and as_bool(photon["enable_photon_validation_gate"])
         ),
+        "photon_observer_science_products_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and photon_mode == "observer_camera_projection"
+            and str(photon["photon_redshift_mode"]) == "validated_zamo"
+            and as_bool(photon["enable_photon_validation_gate"])
+            and as_bool(photon["enable_photon_observer_science_products"])
+        ),
+        "photon_observer_science_require_validation": as_bool(photon["photon_observer_science_require_validation"]),
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
         "photon_observer_camera_aperture_acceptance_applied": False,
@@ -791,6 +812,36 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                                 cascade / "photon_observer_camera_validation_report.md",
                                 cascade / "photon_observer_camera_validation_summary.csv",
                                 cascade / "photon_observer_camera_validation_provenance.json",
+                            ],
+                        )
+                    )
+                if as_bool(photon["enable_photon_observer_science_products"]):
+                    steps.append(
+                        FinalStep(
+                            "photon_observer_science_products",
+                            [
+                                sys.executable,
+                                "scripts/science/build_photon_observer_science_products.py",
+                                "--redshift-csv",
+                                str(cascade / "photon_observer_camera_redshift.csv"),
+                                "--validation-summary-csv",
+                                str(cascade / "photon_observer_camera_validation_summary.csv"),
+                                "--validation-provenance",
+                                str(cascade / "photon_observer_camera_validation_provenance.json"),
+                                "--output-dir",
+                                str(cascade / "photon_observer_science_products"),
+                                "--pipeline-config",
+                                str(science_config),
+                                "--camera-nx",
+                                str(config["camera_nx"]),
+                                "--camera-ny",
+                                str(config["camera_ny"]),
+                            ],
+                            [
+                                cascade / "photon_observer_science_products" / "photon_observer_science_summary.md",
+                                cascade / "photon_observer_science_products" / "photon_observer_science_provenance.json",
+                                cascade / "photon_observer_science_products" / "photon_observer_counts_map.csv",
+                                cascade / "photon_observer_science_products" / "photon_observer_observed_energy_map.csv",
                             ],
                         )
                     )

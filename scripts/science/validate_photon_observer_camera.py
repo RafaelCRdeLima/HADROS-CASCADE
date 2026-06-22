@@ -41,6 +41,8 @@ REQUIRED_CONFIG_KEYS = [
     "photon_redshift_energy_tolerance",
     "photon_redshift_fail_on_invalid",
     "enable_photon_validation_gate",
+    "enable_photon_observer_science_products",
+    "photon_observer_science_require_validation",
     "photon_camera_projection_mode",
     "photon_camera_fov_deg",
     "photon_camera_fov_definition",
@@ -54,6 +56,8 @@ CONFIG_CONTRACT_TESTS = {"config_web_final_contract"}
 
 LEGACY_RECOVERABLE_CONFIG_KEYS = {
     "enable_photon_validation_gate",
+    "enable_photon_observer_science_products",
+    "photon_observer_science_require_validation",
     "photon_observer_crossing_tolerance_rg",
 }
 
