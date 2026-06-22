@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--photon-null-norm-tolerance", required=True)
     parser.add_argument("--photon-invariant-tolerance", required=True)
     parser.add_argument("--photon-horizon-crossing-tolerance-rg", required=True)
+    parser.add_argument("--photon-observer-crossing-tolerance-rg", required=True)
     parser.add_argument("--photon-fail-on-invariant-violation", choices=["true", "false"], required=True)
     parser.add_argument("--photon-min-energy-gev", required=True)
     parser.add_argument("--photon-observer-frame", required=True)
@@ -50,6 +51,7 @@ def main() -> int:
         "--photon-null-norm-tolerance", str(args.photon_null_norm_tolerance),
         "--photon-invariant-tolerance", str(args.photon_invariant_tolerance),
         "--photon-horizon-crossing-tolerance-rg", str(args.photon_horizon_crossing_tolerance_rg),
+        "--photon-observer-crossing-tolerance-rg", str(args.photon_observer_crossing_tolerance_rg),
         "--photon-fail-on-invariant-violation", str(args.photon_fail_on_invariant_violation),
         "--photon-min-energy-gev", str(args.photon_min_energy_gev),
         "--photon-observer-frame", str(args.photon_observer_frame),

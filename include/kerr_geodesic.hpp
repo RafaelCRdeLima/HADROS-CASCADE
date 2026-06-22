@@ -55,6 +55,16 @@ public:
     ) const;
 
     /**
+     * @brief Advance the geodesic state by one fixed RK4 step with an explicit step size.
+     * @param y State updated in place.
+     * @param h Integration step to use for this call.
+     */
+    void step_rk4(
+        GeodesicState& y,
+        double h
+    ) const;
+
+    /**
      * @brief Advance the geodesic state with adaptive step control.
      * @param y State updated in place.
      */

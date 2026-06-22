@@ -75,6 +75,9 @@ struct PhotonResult {
     double observer_crossing_r_rg = std::numeric_limits<double>::quiet_NaN();
     double observer_crossing_theta_rad = std::numeric_limits<double>::quiet_NaN();
     double observer_crossing_phi_rad = std::numeric_limits<double>::quiet_NaN();
+    std::string crossing_momentum_method = "not_available";
+    double crossing_r_error_rg = std::numeric_limits<double>::quiet_NaN();
+    double crossing_null_norm_abs_error = std::numeric_limits<double>::quiet_NaN();
     std::string failure_reason;
 };
 
@@ -275,12 +278,71 @@ void store_pcov(double out[4], const GeodesicState& state)
     out[3] = state.pphi;
 }
 
-void store_interpolated_pcov(double out[4], const GeodesicState& previous, const GeodesicState& current, double alpha)
+GeodesicState integrate_fractional_step(
+    const KerrGeodesic& geodesic,
+    const GeodesicState& previous,
+    double full_step,
+    double fraction
+)
 {
-    out[0] = previous.pt + alpha * (current.pt - previous.pt);
-    out[1] = previous.pr + alpha * (current.pr - previous.pr);
-    out[2] = previous.ptheta + alpha * (current.ptheta - previous.ptheta);
-    out[3] = previous.pphi + alpha * (current.pphi - previous.pphi);
+    GeodesicState state = previous;
+    geodesic.step_rk4(state, full_step * std::clamp(fraction, 0.0, 1.0));
+    return state;
+}
+
+GeodesicState crossing_state_fractional_rk(
+    const KerrGeodesic& geodesic,
+    const GeodesicState& previous,
+    const GeodesicState& current,
+    double observer_radius_rg,
+    double full_step,
+    double tolerance_rg
+)
+{
+    const double prev_delta = previous.r - observer_radius_rg;
+    const double curr_delta = current.r - observer_radius_rg;
+    if (std::abs(prev_delta) <= tolerance_rg) {
+        return previous;
+    }
+    if (std::abs(curr_delta) <= tolerance_rg) {
+        return current;
+    }
+
+    const double denom = current.r - previous.r;
+    double best_fraction = std::isfinite(denom) && std::abs(denom) > REL_EPS
+        ? std::clamp((observer_radius_rg - previous.r) / denom, 0.0, 1.0)
+        : 0.5;
+    GeodesicState best = integrate_fractional_step(geodesic, previous, full_step, best_fraction);
+    double best_error = std::abs(best.r - observer_radius_rg);
+
+    double lo = 0.0;
+    double hi = 1.0;
+    double lo_delta = prev_delta;
+    for (int iter = 0; iter < 80; ++iter) {
+        const double mid = 0.5 * (lo + hi);
+        GeodesicState trial = integrate_fractional_step(geodesic, previous, full_step, mid);
+        const double trial_delta = trial.r - observer_radius_rg;
+        const double trial_error = std::abs(trial_delta);
+        if (std::isfinite(trial_error) && trial_error < best_error) {
+            best = trial;
+            best_error = trial_error;
+            best_fraction = mid;
+        }
+        if (trial_error <= tolerance_rg) {
+            return trial;
+        }
+        if (!std::isfinite(trial_delta)) {
+            break;
+        }
+        if (lo_delta * trial_delta <= 0.0) {
+            hi = mid;
+        } else {
+            lo = mid;
+            lo_delta = trial_delta;
+        }
+    }
+    (void)best_fraction;
+    return best;
 }
 
 bool finite_pcov(const double p[4])
@@ -298,6 +360,7 @@ bool valid_config(const PhotonEscapeConfig& config)
         && std::isfinite(config.photon_null_norm_tolerance) && config.photon_null_norm_tolerance > 0.0
         && std::isfinite(config.photon_invariant_tolerance) && config.photon_invariant_tolerance > 0.0
         && std::isfinite(config.photon_horizon_crossing_tolerance_rg) && config.photon_horizon_crossing_tolerance_rg >= 0.0
+        && std::isfinite(config.photon_observer_crossing_tolerance_rg) && config.photon_observer_crossing_tolerance_rg > 0.0
         && std::isfinite(config.photon_min_energy_gev) && config.photon_min_energy_gev >= 0.0
         && config.observer_frame == "ZAMO";
 }
@@ -448,6 +511,9 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         result.observer_crossing_phi_rad = state.phi;
         store_pcov(result.p_crossing, state);
         result.crossing_momentum_available = finite_pcov(result.p_crossing);
+        result.crossing_momentum_method = "initial_state_already_at_or_beyond_observer_sphere";
+        result.crossing_r_error_rg = std::abs(state.r - config.observer_radius_rg);
+        result.crossing_null_norm_abs_error = std::abs(null_norm_from_pcov(metric, state));
     }
 
     for (int step = 0; !reached && !captured && !missed && !failed && step < config.max_geodesic_steps; ++step) {
@@ -470,16 +536,29 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
         const double prev_delta = previous_state.r - config.observer_radius_rg;
         const double curr_delta = state.r - config.observer_radius_rg;
         if (prev_delta * curr_delta <= 0.0) {
-            const double denom = state.r - previous_state.r;
-            const double alpha = std::isfinite(denom) && std::abs(denom) > REL_EPS
-                ? std::clamp((config.observer_radius_rg - previous_state.r) / denom, 0.0, 1.0)
-                : 0.0;
+            GeodesicState crossing_state = crossing_state_fractional_rk(
+                geodesic,
+                previous_state,
+                state,
+                config.observer_radius_rg,
+                config.geodesic_step_rg,
+                config.photon_observer_crossing_tolerance_rg
+            );
             result.observer_crossing_interpolated = true;
-            result.observer_crossing_r_rg = config.observer_radius_rg;
-            result.observer_crossing_theta_rad = previous_state.theta + alpha * (state.theta - previous_state.theta);
-            result.observer_crossing_phi_rad = previous_state.phi + alpha * (state.phi - previous_state.phi);
-            store_interpolated_pcov(result.p_crossing, previous_state, state, alpha);
+            result.observer_crossing_r_rg = crossing_state.r;
+            result.observer_crossing_theta_rad = crossing_state.theta;
+            result.observer_crossing_phi_rad = crossing_state.phi;
+            store_pcov(result.p_crossing, crossing_state);
             result.crossing_momentum_available = finite_pcov(result.p_crossing);
+            result.crossing_momentum_method = "fractional_rk_crossing_state";
+            result.crossing_r_error_rg = std::abs(crossing_state.r - config.observer_radius_rg);
+            result.crossing_null_norm_abs_error = std::abs(null_norm_from_pcov(metric, crossing_state));
+            if (std::isfinite(result.crossing_null_norm_abs_error)) {
+                result.null_norm_max_abs_error = std::max(
+                    result.null_norm_max_abs_error,
+                    result.crossing_null_norm_abs_error
+                );
+            }
             reached = true;
             break;
         }
@@ -502,7 +581,8 @@ PhotonResult classify_photon(const PhotonRecord& record, const PhotonEscapeConfi
     const bool invariant_violation =
         result.null_norm_max_abs_error > config.photon_invariant_tolerance
         || result.relative_E_error > config.photon_invariant_tolerance
-        || result.relative_Lz_error > config.photon_invariant_tolerance;
+        || result.relative_Lz_error > config.photon_invariant_tolerance
+        || (reached && result.crossing_r_error_rg > config.photon_observer_crossing_tolerance_rg);
 
     if (invariant_violation) {
         result.invariant_status = config.photon_fail_on_invariant_violation
@@ -593,6 +673,9 @@ void write_result(std::ostream& out, const PhotonResult& result)
     write_json_number(out, "observer_crossing_r_rg", result.observer_crossing_r_rg);
     write_json_number(out, "observer_crossing_theta_rad", result.observer_crossing_theta_rad);
     write_json_number(out, "observer_crossing_phi_rad", result.observer_crossing_phi_rad);
+    write_json_field(out, "crossing_momentum_method", result.crossing_momentum_method);
+    write_json_number(out, "crossing_r_error_rg", result.crossing_r_error_rg);
+    write_json_number(out, "crossing_null_norm_abs_error", result.crossing_null_norm_abs_error);
     write_json_field(out, "failure_reason", result.failure_reason);
     out << "}\n";
 }
@@ -678,14 +761,16 @@ void write_provenance(const std::string& path, const PhotonEscapeConfig& config,
         << "  \"photon_null_norm_tolerance\":" << config.photon_null_norm_tolerance << ",\n"
         << "  \"photon_invariant_tolerance\":" << config.photon_invariant_tolerance << ",\n"
         << "  \"photon_horizon_crossing_tolerance_rg\":" << config.photon_horizon_crossing_tolerance_rg << ",\n"
+        << "  \"photon_observer_crossing_tolerance_rg\":" << config.photon_observer_crossing_tolerance_rg << ",\n"
         << "  \"photon_fail_on_invariant_violation\":" << (config.photon_fail_on_invariant_violation ? "true" : "false") << ",\n"
         << "  \"photon_min_energy_gev\":" << config.photon_min_energy_gev << ",\n"
         << "  \"photon_geodesic_step_rg\":" << config.geodesic_step_rg << ",\n"
         << "  \"photon_max_geodesic_steps\":" << config.max_geodesic_steps << ",\n"
         << "  \"momentum_input_mode\":\"per_record_required\",\n"
         << "  \"momentum_input_mode_allowed_values\":[\"zamo_tetrad\",\"global_boyer_lindquist\",\"covariant_p_mu\"],\n"
-        << "  \"observer_crossing_interpolation\":\"linear in integration step; classification only, not detection\",\n"
-        << "  \"crossing_momentum_interpolation\":\"linear_between_geodesic_steps\",\n"
+        << "  \"observer_crossing_interpolation\":\"fractional RK crossing state; classification only, not detection\",\n"
+        << "  \"crossing_momentum_interpolation\":\"none\",\n"
+        << "  \"crossing_momentum_method\":\"fractional_rk_crossing_state\",\n"
         << "  \"horizon_capture_definition\":\"captured_by_black_hole requires crossing from r > r_plus to r <= r_plus + photon_horizon_crossing_tolerance_rg\",\n"
         << "  \"invariant_violation_policy\":\"photon_fail_on_invariant_violation=true always classifies invariant drift as integration_failed_invariant_violation\",\n"
         << "  \"n_input_particles\":" << summary.n_input_particles << ",\n"

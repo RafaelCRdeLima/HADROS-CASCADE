@@ -12,6 +12,7 @@ struct PhotonEscapeConfig {
     double photon_null_norm_tolerance = 0.0;
     double photon_invariant_tolerance = 0.0;
     double photon_horizon_crossing_tolerance_rg = 0.0;
+    double photon_observer_crossing_tolerance_rg = 0.0;
     bool photon_fail_on_invariant_violation = true;
     double photon_min_energy_gev = 0.0;
     std::string observer_frame;

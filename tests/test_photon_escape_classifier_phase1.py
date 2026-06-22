@@ -115,6 +115,7 @@ def classifier_command(
         "--photon-null-norm-tolerance", "1e-8",
         "--photon-invariant-tolerance", invariant_tolerance,
         "--photon-horizon-crossing-tolerance-rg", horizon_tolerance,
+        "--photon-observer-crossing-tolerance-rg", "1e-8",
         "--photon-fail-on-invariant-violation", fail_on_invariant,
         "--photon-min-energy-gev", "0.0",
         "--photon-observer-frame", "ZAMO",
@@ -182,8 +183,14 @@ def test_radial_outward_reaches_observer(binary: Path, tmp: Path) -> None:
         raise AssertionError(f"outward photon did not reach observer: {out_rows[0]}")
     if out_rows[0]["observer_crossing_interpolated"] is not True:
         raise AssertionError(f"observer crossing was not interpolated: {out_rows[0]}")
-    if abs(float(out_rows[0]["observer_crossing_r_rg"]) - 20.0) > 1.0e-12:
+    if abs(float(out_rows[0]["observer_crossing_r_rg"]) - 20.0) > 1.0e-8:
         raise AssertionError(f"bad observer crossing radius: {out_rows[0]}")
+    if float(out_rows[0]["crossing_r_error_rg"]) > 1.0e-8:
+        raise AssertionError(f"crossing radius was not refined to tolerance: {out_rows[0]}")
+    if float(out_rows[0]["crossing_null_norm_abs_error"]) > 1.0e-6:
+        raise AssertionError(f"crossing state is not null within tolerance: {out_rows[0]}")
+    if out_rows[0].get("crossing_momentum_method") != "fractional_rk_crossing_state":
+        raise AssertionError(f"crossing momentum method was not fractional RK: {out_rows[0]}")
     assert_finite_p_mu(out_rows[0])
     assert_finite_initial_position(out_rows[0])
     if out_rows[0].get("crossing_momentum_available") is not True:
@@ -278,6 +285,7 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_null_norm_tolerance",
         "photon_invariant_tolerance",
         "photon_horizon_crossing_tolerance_rg",
+        "photon_observer_crossing_tolerance_rg",
         "photon_fail_on_invariant_violation",
         "photon_max_geodesic_steps",
         "photon_geodesic_step_rg",
@@ -288,6 +296,7 @@ def test_config_web_contains_all_parameters() -> None:
         "photon_redshift_observer_frame",
         "photon_redshift_energy_tolerance",
         "photon_redshift_fail_on_invalid",
+        "enable_photon_validation_gate",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -327,6 +336,7 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_null_norm_tolerance": 1.0e-8,
         "photon_invariant_tolerance": 1.0e-6,
         "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_observer_crossing_tolerance_rg": 1.0e-8,
         "photon_fail_on_invariant_violation": True,
         "photon_max_geodesic_steps": 1234,
         "photon_geodesic_step_rg": 0.03,
@@ -337,6 +347,7 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "photon_redshift_observer_frame": "ZAMO",
         "photon_redshift_energy_tolerance": 1.0e-6,
         "photon_redshift_fail_on_invalid": True,
+        "enable_photon_validation_gate": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -353,6 +364,7 @@ def test_pipeline_passes_all_parameters(tmp: Path) -> None:
         "--photon-geodesic-step-rg": "0.03",
         "--photon-min-energy-gev": "2.0",
         "--photon-horizon-crossing-tolerance-rg": "1e-07",
+        "--photon-observer-crossing-tolerance-rg": "1e-08",
         "--photon-observer-frame": "ZAMO",
         "--photon-fail-on-invariant-violation": "true",
     }
@@ -392,6 +404,7 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_null_norm_tolerance": 1.0e-8,
         "photon_invariant_tolerance": 1.0e-6,
         "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_observer_crossing_tolerance_rg": 1.0e-8,
         "photon_fail_on_invariant_violation": True,
         "photon_max_geodesic_steps": 1234,
         "photon_geodesic_step_rg": 0.03,
@@ -402,6 +415,7 @@ def test_pipeline_runs_phase1_then_phase2_for_observer_sphere_hits(tmp: Path) ->
         "photon_redshift_observer_frame": "ZAMO",
         "photon_redshift_energy_tolerance": 1.0e-6,
         "photon_redshift_fail_on_invalid": True,
+        "enable_photon_validation_gate": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -459,6 +473,7 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "photon_null_norm_tolerance": 1.0e-8,
         "photon_invariant_tolerance": 1.0e-6,
         "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_observer_crossing_tolerance_rg": 1.0e-8,
         "photon_fail_on_invariant_violation": True,
         "photon_max_geodesic_steps": 1234,
         "photon_geodesic_step_rg": 0.03,
@@ -469,6 +484,7 @@ def test_pipeline_runs_phase1_phase2_phase3_for_observer_camera_projection(tmp: 
         "photon_redshift_observer_frame": "ZAMO",
         "photon_redshift_energy_tolerance": 1.0e-6,
         "photon_redshift_fail_on_invalid": True,
+        "enable_photon_validation_gate": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -539,6 +555,7 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
         "photon_null_norm_tolerance": 1.0e-8,
         "photon_invariant_tolerance": 1.0e-6,
         "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_observer_crossing_tolerance_rg": 1.0e-8,
         "photon_fail_on_invariant_violation": True,
         "photon_max_geodesic_steps": 1234,
         "photon_geodesic_step_rg": 0.03,
@@ -549,6 +566,7 @@ def test_pipeline_runs_phase4_only_for_validated_zamo(tmp: Path) -> None:
         "photon_redshift_observer_frame": "ZAMO",
         "photon_redshift_energy_tolerance": 1.0e-6,
         "photon_redshift_fail_on_invalid": False,
+        "enable_photon_validation_gate": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -610,6 +628,7 @@ def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) ->
         "photon_null_norm_tolerance": 1.0e-8,
         "photon_invariant_tolerance": 1.0e-6,
         "photon_horizon_crossing_tolerance_rg": 1.0e-7,
+        "photon_observer_crossing_tolerance_rg": 1.0e-8,
         "photon_fail_on_invariant_violation": True,
         "photon_max_geodesic_steps": 1234,
         "photon_geodesic_step_rg": 0.03,
@@ -620,6 +639,7 @@ def test_pipeline_rejects_validated_zamo_without_camera_projection(tmp: Path) ->
         "photon_redshift_observer_frame": "ZAMO",
         "photon_redshift_energy_tolerance": 1.0e-6,
         "photon_redshift_fail_on_invalid": False,
+        "enable_photon_validation_gate": True,
         "photon_camera_projection_mode": "gnomonic_pinhole",
         "photon_camera_fov_deg": 60.0,
         "photon_camera_fov_definition": "square_half_angle",
@@ -648,6 +668,7 @@ def test_wrapper_has_no_physical_defaults() -> None:
         'parser.add_argument("--photon-null-norm-tolerance", default=',
         'parser.add_argument("--photon-invariant-tolerance", default=',
         'parser.add_argument("--photon-horizon-crossing-tolerance-rg", default=',
+        'parser.add_argument("--photon-observer-crossing-tolerance-rg", default=',
         'parser.add_argument("--photon-min-energy-gev", default=',
         'default="ZAMO"',
         'default="true"',
@@ -665,6 +686,7 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'config.get("photon_null_norm_tolerance"',
         'config.get("photon_invariant_tolerance"',
         'config.get("photon_horizon_crossing_tolerance_rg"',
+        'config.get("photon_observer_crossing_tolerance_rg"',
         'config.get("photon_fail_on_invariant_violation"',
         'config.get("photon_max_geodesic_steps"',
         'config.get("photon_geodesic_step_rg"',
@@ -675,6 +697,7 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'config.get("photon_redshift_observer_frame"',
         'config.get("photon_redshift_energy_tolerance"',
         'config.get("photon_redshift_fail_on_invalid"',
+        'config.get("enable_photon_validation_gate"',
         'config.get("photon_camera_projection_mode"',
         'config.get("photon_camera_fov_deg"',
         'config.get("photon_camera_fov_definition"',
@@ -687,6 +710,7 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'photon.get("photon_null_norm_tolerance"',
         'photon.get("photon_invariant_tolerance"',
         'photon.get("photon_horizon_crossing_tolerance_rg"',
+        'photon.get("photon_observer_crossing_tolerance_rg"',
         'photon.get("photon_fail_on_invariant_violation"',
         'photon.get("photon_max_geodesic_steps"',
         'photon.get("photon_geodesic_step_rg"',
@@ -697,6 +721,7 @@ def test_pipeline_has_no_photon_physical_defaults() -> None:
         'photon.get("photon_redshift_observer_frame"',
         'photon.get("photon_redshift_energy_tolerance"',
         'photon.get("photon_redshift_fail_on_invalid"',
+        'photon.get("enable_photon_validation_gate"',
         'photon.get("photon_camera_projection_mode"',
         'photon.get("photon_camera_fov_deg"',
         'photon.get("photon_camera_fov_definition"',
@@ -724,8 +749,12 @@ def test_provenance_contains_phase1_limitations(binary: Path, tmp: Path) -> None
         raise AssertionError(f"provenance missing momentum_input_mode policy: {prov}")
     if float(prov.get("photon_horizon_crossing_tolerance_rg", -1.0)) < 0.0:
         raise AssertionError(f"provenance missing horizon tolerance: {prov}")
-    if prov.get("crossing_momentum_interpolation") != "linear_between_geodesic_steps":
+    if float(prov.get("photon_observer_crossing_tolerance_rg", -1.0)) <= 0.0:
+        raise AssertionError(f"provenance missing observer crossing tolerance: {prov}")
+    if prov.get("crossing_momentum_interpolation") != "none":
         raise AssertionError(f"provenance missing crossing momentum interpolation policy: {prov}")
+    if prov.get("crossing_momentum_method") != "fractional_rk_crossing_state":
+        raise AssertionError(f"provenance missing fractional RK crossing method: {prov}")
 
 
 def phase1_hit_row(**updates: object) -> dict[str, object]:
@@ -760,6 +789,9 @@ def phase1_hit_row(**updates: object) -> dict[str, object]:
         "p_theta_crossing": 0.15,
         "p_phi_crossing": 0.2,
         "crossing_momentum_available": True,
+        "crossing_momentum_method": "fractional_rk_crossing_state",
+        "crossing_r_error_rg": 1.0e-10,
+        "crossing_null_norm_abs_error": 1.0e-12,
     }
     row.update(updates)
     return row
@@ -832,6 +864,11 @@ def test_phase2_preserves_covariant_momentum_fields(tmp: Path) -> None:
             raise AssertionError(f"Phase 2 did not preserve {field}: {hit}")
     if hit.get("crossing_momentum_available") is not True:
         raise AssertionError(f"Phase 2 did not preserve crossing_momentum_available: {hit}")
+    if hit.get("crossing_momentum_method") != "fractional_rk_crossing_state":
+        raise AssertionError(f"Phase 2 did not preserve crossing_momentum_method: {hit}")
+    for field in ["crossing_r_error_rg", "crossing_null_norm_abs_error"]:
+        if float(hit[field]) != float(source[field]):
+            raise AssertionError(f"Phase 2 did not preserve {field}: {hit}")
 
 
 def test_phase2_summary_accumulates_reached_energy(tmp: Path) -> None:
@@ -1314,6 +1351,13 @@ def test_phase3_preserves_covariant_momentum_fields(tmp: Path) -> None:
             raise AssertionError(f"Phase 3 did not preserve {field}: {row}")
     if row.get("crossing_momentum_available") != "true":
         raise AssertionError(f"Phase 3 did not preserve crossing_momentum_available: {row}")
+    if row.get("crossing_momentum_method") != "fractional_rk_crossing_state":
+        raise AssertionError(f"Phase 3 did not preserve crossing_momentum_method: {row}")
+    for field in ["crossing_r_error_rg", "crossing_null_norm_abs_error"]:
+        if field not in row:
+            raise AssertionError(f"Phase 3 camera CSV missing {field}: {csv_text}")
+        if float(row[field]) != float(source[field]):
+            raise AssertionError(f"Phase 3 did not preserve {field}: {row}")
     if "observed_energy_gev" in csv_text:
         raise AssertionError(f"Phase 3 unexpectedly emitted observed_energy_gev: {csv_text}")
 

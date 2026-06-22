@@ -42,6 +42,9 @@ HIT_FIELDS = [
     "p_theta_crossing",
     "p_phi_crossing",
     "crossing_momentum_available",
+    "crossing_momentum_method",
+    "crossing_r_error_rg",
+    "crossing_null_norm_abs_error",
 ]
 
 SUMMARY_FIELDS = [
@@ -129,6 +132,9 @@ def hit_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "p_theta_crossing": as_float(row, "p_theta_crossing"),
         "p_phi_crossing": as_float(row, "p_phi_crossing"),
         "crossing_momentum_available": bool(row.get("crossing_momentum_available")),
+        "crossing_momentum_method": row.get("crossing_momentum_method"),
+        "crossing_r_error_rg": as_float(row, "crossing_r_error_rg"),
+        "crossing_null_norm_abs_error": as_float(row, "crossing_null_norm_abs_error"),
     }
     missing = [key for key in HIT_FIELDS if hit.get(key) is None]
     if missing:

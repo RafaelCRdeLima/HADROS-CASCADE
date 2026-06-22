@@ -84,6 +84,7 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_null_norm_tolerance",
         "photon_invariant_tolerance",
         "photon_horizon_crossing_tolerance_rg",
+        "photon_observer_crossing_tolerance_rg",
         "photon_fail_on_invariant_violation",
         "photon_max_geodesic_steps",
         "photon_geodesic_step_rg",
@@ -94,6 +95,7 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         "photon_redshift_observer_frame",
         "photon_redshift_energy_tolerance",
         "photon_redshift_fail_on_invalid",
+        "enable_photon_validation_gate",
         "photon_camera_projection_mode",
         "photon_camera_fov_deg",
         "photon_camera_fov_definition",
@@ -125,6 +127,7 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
     if not math.isfinite(float(values["photon_redshift_energy_tolerance"])) or float(values["photon_redshift_energy_tolerance"]) <= 0.0:
         raise ValueError("photon_redshift_energy_tolerance must be > 0")
     as_bool(values["photon_redshift_fail_on_invalid"])
+    as_bool(values["enable_photon_validation_gate"])
     if str(values["photon_camera_output_mode"]) not in {"summary_only", "arrivals"}:
         raise ValueError("Unsupported photon_camera_output_mode for Phase 1")
     if str(values["photon_camera_projection_mode"]) != "gnomonic_pinhole":
@@ -147,6 +150,8 @@ def photon_escape_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("photon_invariant_tolerance must be > 0")
     if float(values["photon_horizon_crossing_tolerance_rg"]) < 0.0:
         raise ValueError("photon_horizon_crossing_tolerance_rg must be >= 0")
+    if float(values["photon_observer_crossing_tolerance_rg"]) <= 0.0:
+        raise ValueError("photon_observer_crossing_tolerance_rg must be > 0")
     if float(values["photon_geodesic_step_rg"]) <= 0.0:
         raise ValueError("photon_geodesic_step_rg must be > 0")
     if int(values["photon_max_geodesic_steps"]) <= 0:
@@ -282,6 +287,7 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_null_norm_tolerance": float(photon["photon_null_norm_tolerance"]),
         "photon_invariant_tolerance": float(photon["photon_invariant_tolerance"]),
         "photon_horizon_crossing_tolerance_rg": float(photon["photon_horizon_crossing_tolerance_rg"]),
+        "photon_observer_crossing_tolerance_rg": float(photon["photon_observer_crossing_tolerance_rg"]),
         "photon_fail_on_invariant_violation": as_bool(photon["photon_fail_on_invariant_violation"]),
         "photon_max_geodesic_steps": int(photon["photon_max_geodesic_steps"]),
         "photon_geodesic_step_rg": float(photon["photon_geodesic_step_rg"]),
@@ -292,6 +298,7 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
         "photon_redshift_observer_frame": photon["photon_redshift_observer_frame"],
         "photon_redshift_energy_tolerance": float(photon["photon_redshift_energy_tolerance"]),
         "photon_redshift_fail_on_invalid": as_bool(photon["photon_redshift_fail_on_invalid"]),
+        "enable_photon_validation_gate": as_bool(photon["enable_photon_validation_gate"]),
         "photon_camera_projection_mode": photon["photon_camera_projection_mode"],
         "photon_camera_fov_deg": float(photon["photon_camera_fov_deg"]),
         "photon_camera_fov_definition": photon["photon_camera_fov_definition"],
@@ -329,6 +336,12 @@ def config_for_interaction_scripts(config: dict[str, Any], output_dir: Path) -> 
             "photon_observer_camera_redshift"
             if photon_mode == "observer_camera_projection" and str(photon["photon_redshift_mode"]) == "validated_zamo"
             else "not_run"
+        ),
+        "photon_observer_camera_validation_gate_enabled_effective": (
+            as_bool(photon["enable_photon_observer_camera"])
+            and photon_mode == "observer_camera_projection"
+            and str(photon["photon_redshift_mode"]) == "validated_zamo"
+            and as_bool(photon["enable_photon_validation_gate"])
         ),
         "photon_observer_camera_detector_model_applied": False,
         "photon_observer_camera_instrument_response_applied": False,
@@ -607,6 +620,8 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                     str(photon["photon_invariant_tolerance"]),
                     "--photon-horizon-crossing-tolerance-rg",
                     str(photon["photon_horizon_crossing_tolerance_rg"]),
+                    "--photon-observer-crossing-tolerance-rg",
+                    str(photon["photon_observer_crossing_tolerance_rg"]),
                     "--photon-fail-on-invariant-violation",
                     fail_on_invariant,
                     "--photon-min-energy-gev",
@@ -742,6 +757,43 @@ def build_steps(config: dict[str, Any], config_path: Path) -> list[FinalStep]:
                         ],
                     )
                 )
+                if as_bool(photon["enable_photon_validation_gate"]):
+                    steps.append(
+                        FinalStep(
+                            "photon_observer_camera_validation_gate",
+                            [
+                                sys.executable,
+                                "scripts/science/validate_photon_observer_camera.py",
+                                "--camera-csv",
+                                str(cascade / "photon_observer_camera.csv"),
+                                "--redshift-csv",
+                                str(cascade / "photon_observer_camera_redshift.csv"),
+                                "--camera-provenance",
+                                str(cascade / "photon_observer_camera_provenance.json"),
+                                "--redshift-provenance",
+                                str(cascade / "photon_observer_camera_redshift_provenance.json"),
+                                "--pipeline-config",
+                                str(science_config),
+                                "--report-md",
+                                str(cascade / "photon_observer_camera_validation_report.md"),
+                                "--summary-csv",
+                                str(cascade / "photon_observer_camera_validation_summary.csv"),
+                                "--provenance",
+                                str(cascade / "photon_observer_camera_validation_provenance.json"),
+                                "--spin",
+                                str(config["spin"]),
+                                "--photon-invariant-tolerance",
+                                str(photon["photon_invariant_tolerance"]),
+                                "--photon-redshift-energy-tolerance",
+                                str(photon["photon_redshift_energy_tolerance"]),
+                            ],
+                            [
+                                cascade / "photon_observer_camera_validation_report.md",
+                                cascade / "photon_observer_camera_validation_summary.csv",
+                                cascade / "photon_observer_camera_validation_provenance.json",
+                            ],
+                        )
+                    )
     if mode == "uhe_cascade":
         return steps
     if association_mode == "full_transport":

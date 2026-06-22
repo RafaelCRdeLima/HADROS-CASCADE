@@ -67,6 +67,7 @@ int main(int argc, char** argv)
         config.photon_null_norm_tolerance = required_double(args, "--photon-null-norm-tolerance");
         config.photon_invariant_tolerance = required_double(args, "--photon-invariant-tolerance");
         config.photon_horizon_crossing_tolerance_rg = required_double(args, "--photon-horizon-crossing-tolerance-rg");
+        config.photon_observer_crossing_tolerance_rg = required_double(args, "--photon-observer-crossing-tolerance-rg");
         config.photon_fail_on_invariant_violation = required_bool(args, "--photon-fail-on-invariant-violation");
         config.photon_min_energy_gev = required_double(args, "--photon-min-energy-gev");
         config.observer_frame = required(args, "--photon-observer-frame");

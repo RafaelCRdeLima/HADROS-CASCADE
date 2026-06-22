@@ -129,7 +129,8 @@ GeodesicState KerrGeodesic::rhs(
 }
 
 void KerrGeodesic::step_rk4(
-    GeodesicState& y
+    GeodesicState& y,
+    double h
 ) const
 {
     auto add_scaled =
@@ -156,33 +157,40 @@ void KerrGeodesic::step_rk4(
     };
 
     GeodesicState k1 = rhs(y);
-    GeodesicState k2 = rhs(add_scaled(y, k1, 0.5 * h_));
-    GeodesicState k3 = rhs(add_scaled(y, k2, 0.5 * h_));
-    GeodesicState k4 = rhs(add_scaled(y, k3, h_));
+    GeodesicState k2 = rhs(add_scaled(y, k1, 0.5 * h));
+    GeodesicState k3 = rhs(add_scaled(y, k2, 0.5 * h));
+    GeodesicState k4 = rhs(add_scaled(y, k3, h));
 
-    y.t += h_ *
+    y.t += h *
         (k1.t + 2.0*k2.t + 2.0*k3.t + k4.t) / 6.0;
 
-    y.r += h_ *
+    y.r += h *
         (k1.r + 2.0*k2.r + 2.0*k3.r + k4.r) / 6.0;
 
-    y.theta += h_ *
+    y.theta += h *
         (k1.theta + 2.0*k2.theta + 2.0*k3.theta + k4.theta) / 6.0;
 
-    y.phi += h_ *
+    y.phi += h *
         (k1.phi + 2.0*k2.phi + 2.0*k3.phi + k4.phi) / 6.0;
 
-    y.pt += h_ *
+    y.pt += h *
         (k1.pt + 2.0*k2.pt + 2.0*k3.pt + k4.pt) / 6.0;
 
-    y.pr += h_ *
+    y.pr += h *
         (k1.pr + 2.0*k2.pr + 2.0*k3.pr + k4.pr) / 6.0;
 
-    y.ptheta += h_ *
+    y.ptheta += h *
         (k1.ptheta + 2.0*k2.ptheta + 2.0*k3.ptheta + k4.ptheta) / 6.0;
 
-    y.pphi += h_ *
+    y.pphi += h *
         (k1.pphi + 2.0*k2.pphi + 2.0*k3.pphi + k4.pphi) / 6.0;
+}
+
+void KerrGeodesic::step_rk4(
+    GeodesicState& y
+) const
+{
+    step_rk4(y, h_);
 }
 
 void KerrGeodesic::step_adaptive(GeodesicState& y) const
